@@ -692,6 +692,8 @@ class SeedPicker:
                 self.df[col] = 0
 
     def _score(self, row):
+        if row.get("suspended_count", 0) > 0: #suspended cards are never chosed
+            return float("inf") 
         return (
             row["total_count"]
             + 3 * row["new_count"]
@@ -1728,6 +1730,7 @@ if __name__ == "__main__":
         # TODO que vs. quien vs. lo que
         # TODO a vs. (no a)
         # TODO uses of se: reflexive and pronominal
+        # TODO emotion words and con vs. por vs. de
         
         # og_noun_set_size = len(noun_set)
         # og_verb_set_size = len(verb_set)
