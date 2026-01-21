@@ -487,15 +487,29 @@ def chat(prompt: str) -> str:
         {
             "role": "system",
             "content": (
-                "You are a Spanish sentence generator. "
-                "Respond with exactly ONE complete Spanish sentence. "
-                "Do NOT include explanations, translations, punctuation outside the sentence, "
-                "or any text in any language other than Spanish."
+                # "You are a Spanish sentence generator. "
+                # "Respond with exactly ONE complete Spanish sentence. "
+                # "Do NOT include explanations, translations, punctuation outside the sentence, "
+                # "or any text in any language other than Spanish."
+                # "Use the exact grammatical construction or connector requested."
+                # "Do not paraphrase or substitute it."
+                # "The sentence must demonstrate the requested grammatical reason clearly and unambiguously."
+                """
+                You are a Spanish sentence generator.
+                Respond with exactly ONE complete Spanish sentence.
+                Use the exact grammatical construction or connector requested.
+                Do not paraphrase, substitute, or restructure to avoid the construction.
+                The sentence must clearly and unambiguously demonstrate the requested grammatical reason.
+                Do NOT include explanations, translations, punctuation outside the sentence,
+                or any text in any language other than Spanish.
+                """
             )
             # "content": (
             #     "You are a part of speech determiner for both English and Spanish. "
             #     "Respond with exactly ONE part of speech: noun, verb, adjective, adverb, other "
             #     "Do NOT include explanations, translations, punctuation outside the sentence. "
+            
+
             # )
         },
         {"role": "user", "content": prompt}
@@ -580,6 +594,8 @@ if __name__ == "__main__":
 
     action = 'generate cards'
     DB_PATH = "/tmp/collection_ro.anki2"
+
+    DRY_RUN = True
 
     if action == 'action1':
         # cp "/Users/hume/Library/Application Support/Anki2/Hume/collection.anki2" /tmp/collection_ro.anki2
@@ -1065,16 +1081,208 @@ if __name__ == "__main__":
     elif action == 'generate cards':
         pass
 
-        chatbot_content = (
-                "You are a Spanish sentence generator. "
-                "Respond with exactly ONE complete Spanish sentence. "
-                "Do NOT include explanations, translations, punctuation outside the sentence, "
-                "or any text in any language other than Spanish."
-            )
+        ### this was copy pasted from another project that's why it's ugly
+        irregular_ar_verbs__dict = {}
+        irregular_er_verbs__dict = {}
+        irregular_ir_verbs__dict = {}
+
+        irregular_ar_verbs__dict['estar'] = 'to be (temporary)'
+        irregular_ar_verbs__dict['andar'] = 'to walk'
+        irregular_ar_verbs__dict['dar'] = 'to give'
+        irregular_ar_verbs__dict['jugar'] = 'to play'
+        irregular_ar_verbs__dict['regar'] = 'to water'
+        irregular_ar_verbs__dict['negar'] = 'to deny'
+        irregular_ar_verbs__dict['empezar'] = 'to start'
+        irregular_ar_verbs__dict['calentar'] = 'to heat'
+        irregular_ar_verbs__dict['aferrar'] = 'to grasp'
+        irregular_ar_verbs__dict['pensar'] = 'to think'
+        irregular_ar_verbs__dict['recalentar'] = 'to warm up'
+        irregular_ar_verbs__dict['recomendar'] = 'to recommend'
+        irregular_ar_verbs__dict['reventar'] = 'to burst'
+        irregular_ar_verbs__dict['sentar'] = 'to sit'
+        irregular_ar_verbs__dict['tentar'] = 'to tempt'
+        irregular_ar_verbs__dict['acertar'] = 'to get right; to guess correctly'
+        irregular_ar_verbs__dict['soterrar'] = 'to bury'
+        irregular_ar_verbs__dict['manifestar'] = 'to declare'
+        irregular_ar_verbs__dict['quebrar'] = 'to break; to go bankrupt'
+        irregular_ar_verbs__dict['sembrar'] = 'to plant; to sow'
+        irregular_ar_verbs__dict['temblar'] = 'to shake'
+        irregular_ar_verbs__dict['comenzar'] = 'to begin; to start'
+        irregular_ar_verbs__dict['acostar'] = 'to put to bed'
+        irregular_ar_verbs__dict['colgar'] = 'to hang'
+        irregular_ar_verbs__dict['renovar'] = 'to renew'
+        irregular_ar_verbs__dict['apostar'] = 'to bet'
+        irregular_ar_verbs__dict['contar'] = 'to count; to tell'
+        irregular_ar_verbs__dict['mostrar'] = 'to show'
+        irregular_ar_verbs__dict['poblar'] = 'to populate; to fill'
+        irregular_ar_verbs__dict['probar'] = 'to try; to taste'
+        irregular_ar_verbs__dict['recordar'] = 'to remember'
+        irregular_ar_verbs__dict['rodar'] = 'to roll; to shoot (as in film)'
+        irregular_ar_verbs__dict['soldar'] = 'to solder'
+        irregular_ar_verbs__dict['soltar'] = 'to let go of; to loosen'
+        irregular_ar_verbs__dict['sonar'] = 'to ring'
+        irregular_ar_verbs__dict['soñar'] = 'to dream'
+        irregular_ar_verbs__dict['tostar'] = 'to toast'
+        irregular_ar_verbs__dict['volar'] = 'to fly'
+        irregular_ar_verbs__dict['almorzar'] = 'to have lunch'
+        irregular_ar_verbs__dict['sosegar'] = 'to calm'
+        irregular_ar_verbs__dict['reforzar'] = 'to reinforce'
+
+        irregular_er_verbs__dict['caber'] = 'to fit'
+        irregular_er_verbs__dict['haber'] = 'to be obligated to; (used in compound tenses)'
+        irregular_er_verbs__dict['oler'] = 'to smell'
+        irregular_er_verbs__dict['saber'] = 'to know; to taste'
+        irregular_er_verbs__dict['ser'] = 'to be (permanent)'
+        irregular_er_verbs__dict['valer'] = 'to be worth; to cost'
+        irregular_er_verbs__dict['ver'] = 'to see; to watch'
+        irregular_er_verbs__dict['deshacer'] = 'to undo'
+        irregular_er_verbs__dict['hacer'] = 'to do; to make'
+        irregular_er_verbs__dict['satisfacer'] = 'to satisfy'
+        irregular_er_verbs__dict['contener'] = 'to contain'
+        irregular_er_verbs__dict['detener'] = 'to stop'
+        irregular_er_verbs__dict['disponer'] = 'to arrange; to have'
+        irregular_er_verbs__dict['entretener'] = 'to entertain'
+        irregular_er_verbs__dict['exponer'] = 'to expose; to exhibit'
+        irregular_er_verbs__dict['imponer'] = 'to impose'
+        irregular_er_verbs__dict['mantener'] = 'to hold'
+        irregular_er_verbs__dict['oponer'] = 'to put up'
+        irregular_er_verbs__dict['poner'] = 'to put'
+        irregular_er_verbs__dict['posponer'] = 'to postpone'
+        irregular_er_verbs__dict['predisponer'] = 'to predispose'
+        irregular_er_verbs__dict['proponer'] = 'to propose'
+        irregular_er_verbs__dict['reponer'] = 'to replace'
+        irregular_er_verbs__dict['retener'] = 'to keep; to retain'
+        irregular_er_verbs__dict['sobreponer'] = 'to put on top of'
+        irregular_er_verbs__dict['sostener'] = 'to hold'
+        irregular_er_verbs__dict['suponer'] = 'to suppose'
+        irregular_er_verbs__dict['tener'] = 'to have; to be'
+        #irregular_er_verbs__dict['atener'] = ''
+        irregular_er_verbs__dict['atraer'] = 'to attract'
+        irregular_er_verbs__dict['caer'] = 'to fall'
+        irregular_er_verbs__dict['distraer'] = 'to distract'
+        irregular_er_verbs__dict['extraer'] = 'to extract; to draw'
+        irregular_er_verbs__dict['recaer'] = 'to suffer a relapse'
+        irregular_er_verbs__dict['retraer'] = 'to retract'
+        irregular_er_verbs__dict['sustraer'] = 'to subtract'
+        irregular_er_verbs__dict['traer'] = 'to bring'
+        irregular_er_verbs__dict['contraer'] = 'to contract'
+        irregular_er_verbs__dict['poseer'] = 'to have'
+        irregular_er_verbs__dict['proveer'] = 'to provide'
+        irregular_er_verbs__dict['leer'] = 'to read'
+        irregular_er_verbs__dict['creer'] = 'to believe'
+        irregular_er_verbs__dict['conmover'] = 'to move'
+        irregular_er_verbs__dict['devolver'] = 'to give back; to return'
+        irregular_er_verbs__dict['volver'] = 'to return'
+        irregular_er_verbs__dict['desvolver'] = 'to plow'
+        irregular_er_verbs__dict['envolver'] = 'to wrap'
+        irregular_er_verbs__dict['mover'] = 'to move'
+        irregular_er_verbs__dict['promover'] = 'to promote'
+        irregular_er_verbs__dict['resolver'] = 'to solve'
+        irregular_er_verbs__dict['poder'] = 'to be able to'
+        irregular_er_verbs__dict['morder'] = 'to bite'
+        irregular_er_verbs__dict['llover'] = 'to rain'
+        irregular_er_verbs__dict['doler'] = 'to hurt'
+        irregular_er_verbs__dict['demoler'] = 'to demolish'
+        irregular_er_verbs__dict['verter'] = 'to pour; to spill'
+        irregular_er_verbs__dict['tender'] = 'to hang'
+        irregular_er_verbs__dict['querer'] = 'to want'
+        irregular_er_verbs__dict['malentender'] = 'to misunderstand'
+        irregular_er_verbs__dict['extender'] = 'to spread out'
+        irregular_er_verbs__dict['entender'] = 'to understand'
+        irregular_er_verbs__dict['desatender'] = 'to neglect; to disregard'
+        irregular_er_verbs__dict['defender'] = 'to defend'
+        irregular_er_verbs__dict['contender'] = 'to contend'
+
+        irregular_ir_verbs__dict['ir'] = 'to go'
+        irregular_ir_verbs__dict['adherir'] = 'to stick'
+        irregular_ir_verbs__dict['advertir'] = 'to warn'
+        irregular_ir_verbs__dict['adquirir'] = 'to acquire; to purchase'
+        irregular_ir_verbs__dict['diferir'] = 'to differ; to postpone'
+        irregular_ir_verbs__dict['digerir'] = 'to digest; to assimilate'
+        irregular_ir_verbs__dict['herir'] = 'to wound; to hurt'
+        irregular_ir_verbs__dict['inferir'] = 'to infer'
+        irregular_ir_verbs__dict['ingerir'] = 'to ingest'
+        irregular_ir_verbs__dict['interferir'] = 'to interfere with'
+        irregular_ir_verbs__dict['preferir'] = 'to prefer'
+        irregular_ir_verbs__dict['referir'] = 'to refer'
+        irregular_ir_verbs__dict['transferir'] = 'to transfer'
+        irregular_ir_verbs__dict['discernir'] = 'to discern; to distinguish'
+        irregular_ir_verbs__dict['divertir'] = 'to amuse; to entertain'
+        irregular_ir_verbs__dict['sentir'] = 'to feel'
+        irregular_ir_verbs__dict['revertir'] = 'to revert to'
+        irregular_ir_verbs__dict['resentir'] = 'to resent'
+        irregular_ir_verbs__dict['presentir'] = 'to have a feeling; to sense'
+        irregular_ir_verbs__dict['mentir'] = 'to lie'
+        irregular_ir_verbs__dict['invertir'] = 'to invest'
+        irregular_ir_verbs__dict['rugir'] = 'to roar'
+        irregular_ir_verbs__dict['sumergir'] = 'to submerge'
+        irregular_ir_verbs__dict['surgir'] = 'to arise'
+        irregular_ir_verbs__dict['transigir'] = 'to compromise'
+        irregular_ir_verbs__dict['ungir'] = 'to put ointment on; to elect'
+        irregular_ir_verbs__dict['dirigir'] = 'to manage; to run'
+        irregular_ir_verbs__dict['exigir'] = 'to demand; to call for'
+        irregular_ir_verbs__dict['infringir'] = 'to infringe'
+        irregular_ir_verbs__dict['producir'] = 'to produce'
+        irregular_ir_verbs__dict['reducir'] = 'to reduce'
+        irregular_ir_verbs__dict['seducir'] = 'to seduce'
+        irregular_ir_verbs__dict['traducir'] = 'to translate'
+        irregular_ir_verbs__dict['inducir'] = 'to lead to; to induce'
+        irregular_ir_verbs__dict['introducir'] = 'to insert'
+        irregular_ir_verbs__dict['lucir'] = 'to shine; to wear'
+        irregular_ir_verbs__dict['perseguir'] = 'to pursue'
+        irregular_ir_verbs__dict['distinguir'] = 'to distinguish; to tell the difference'
+        irregular_ir_verbs__dict['seguir'] = 'to follow'
+        irregular_ir_verbs__dict['ocluir'] = 'to occlude'
+        irregular_ir_verbs__dict['destruir'] = 'to destroy'
+        irregular_ir_verbs__dict['disminuir'] = 'to reduce; to decrease'
+        irregular_ir_verbs__dict['distribuir'] = 'to distribute'
+        irregular_ir_verbs__dict['excluir'] = 'to exclude'
+        irregular_ir_verbs__dict['fluir'] = 'to flow'
+        irregular_ir_verbs__dict['huir'] = 'to escape'
+        irregular_ir_verbs__dict['incluir'] = 'to include'
+        irregular_ir_verbs__dict['influir'] = 'to influence'
+        irregular_ir_verbs__dict['instituir'] = 'to institute'
+        irregular_ir_verbs__dict['sustituir'] = 'to substitute; to replace'
+        irregular_ir_verbs__dict['teñir'] = 'to dye'
+        irregular_ir_verbs__dict['elegir'] = 'to choose'
+        irregular_ir_verbs__dict['regir'] = 'to govern'
+        irregular_ir_verbs__dict['pedir'] = 'to ask for; to order'
+        # irregular_ir_verbs__dict['dervetir'] = '' ?
+        irregular_ir_verbs__dict['despedir'] = 'to say goodbye to; to fire'
+        irregular_ir_verbs__dict['freír'] = 'to fry'
+        irregular_ir_verbs__dict['gemir'] = 'to moan'
+        irregular_ir_verbs__dict['impedir'] = 'to prevent'
+        irregular_ir_verbs__dict['servir'] = 'to be useful; to serve'
+        irregular_ir_verbs__dict['repetir'] = 'to do again; to repeat'
+        irregular_ir_verbs__dict['rendir'] = 'to produce'
+        irregular_ir_verbs__dict['reñir'] = 'to tell off'
+        irregular_ir_verbs__dict['medir'] = 'to measure'
+        irregular_ir_verbs__dict['vestir'] = 'to wear'
+        irregular_ir_verbs__dict['decir'] = 'to say; to tell'
+        irregular_ir_verbs__dict['predecir'] = 'to predict'
+        irregular_ir_verbs__dict['venir'] = 'to come'
+        irregular_ir_verbs__dict['oír'] = 'to hear'
+        irregular_ir_verbs__dict['salir'] = 'to leave'
+        irregular_ir_verbs__dict['movir'] = 'to go out; to leave'
+        irregular_ir_verbs__dict['sobresalir'] = 'to stick our; to stand out'
+        irregular_ir_verbs__dict['intervenir'] = 'to intervene'
+        irregular_ir_verbs__dict['dormir'] = 'to sleep'
+
+        irregular_verbs_es_en = dict(irregular_ar_verbs__dict,**irregular_er_verbs__dict,**irregular_ir_verbs__dict)
+        irregular_verbs_en_es = {v: k for k, v in irregular_verbs_es_en.items()}
+
+
+        # chatbot_content = (
+        #         "You are a Spanish sentence generator. "
+        #         "Respond with exactly ONE complete Spanish sentence. "
+        #         "Do NOT include explanations, translations, punctuation outside the sentence, "
+        #         "or any text in any language other than Spanish."
+        #     )
 
         cards = getAnkiCards()
         noun_set = set()
-        verb_set = set()
+        verb_set = set(irregular_verbs_es_en.keys()) # add irreuglars to verb set !
+
         for _, row in cards.iterrows():
             tags = row.loc['tags']
             if not 'langid:es' in tags:
@@ -1091,10 +1299,8 @@ if __name__ == "__main__":
         # TODO a vs. (no a)
         # TODO uses of se: reflexive and pronominal
         
-        # print('SETS')
-        # print('Noun: '+str(len(noun_set)))
-        # print('Verb: '+str(len(verb_set)))
-
+        og_noun_set_size = len(noun_set)
+        og_verb_set_size = len(verb_set)
 
         ser_use_cases = [
             'Identity',
@@ -1123,7 +1329,7 @@ if __name__ == "__main__":
             deck_and_prompt_tuples.append((f"Ser - {ser_use_case}" , ser_prompt))
         del ser_use_case
 
-        for estar_use_case in ser_use_cases:
+        for estar_use_case in estar_use_cases:
             words_list = noun_set.pop()+', '+verb_set.pop()
 
             estar_prompt = f"Generate a sentence that uses \"estar\" because of {estar_use_case} and contains these words or conjugations of these words: {words_list}."
@@ -1171,7 +1377,9 @@ if __name__ == "__main__":
         del subj_trigger
         del words_list
 
-        depends_subj_triggers = ["aunque","aun así","y eso que"]
+        depends_subj_triggers = ["aunque",
+                                #  "aun así","y eso que" #GPT reviewed my code and said these were not a good choice
+                                 ]
 
         for subj_trigger in depends_subj_triggers:
             words_list = noun_set.pop()+', '+verb_set.pop()
@@ -1235,7 +1443,6 @@ if __name__ == "__main__":
             'por razón de'
         ]
         complex_coordination_dict["Final / Purpose"] = [
-            'With que',
             'para que',
             'a fin de que',
             'con el fin de que',
@@ -1264,7 +1471,7 @@ if __name__ == "__main__":
         complex_coordination_dict["Temporal"] = [
             'cuando',
             'mientras',
-            'mientras que',
+            # 'mientras que', # a la GPT "mientras que is usually contrastive (“whereas”) more than temporal; mientras is the temporal one."
             'en cuanto',
             'tan pronto como',
             'apenas',
@@ -1431,8 +1638,11 @@ if __name__ == "__main__":
 
             words_list = noun_set.pop()+', '+verb_set.pop()
             cloze_por_prompt = f"Generate a sentence that uses \"por\" exactly once in the sense of \"{por_reason}\" and contains these words or conjugations of these words ({words_list})."
-            spanish_sentence = chat(cloze_por_prompt)
-            spanish_sentence = spanish_sentence.replace('por','____')
+            if DRY_RUN:
+                spanish_sentence = 'Spanish Sentence Placeholder: '+str(cloze_por_prompt)
+            else:
+                spanish_sentence = chat(cloze_por_prompt)
+            spanish_sentence = re.sub(r'\b[Pp]or\b', '____', spanish_sentence, count=1)
             
             deck_name_to_card_dict[deck_full_name][spanish_sentence] = {"back": deck_specific_name,
                                                                        "tags":[deck_specific_name.replace(" ","_"),"notconfirmed"]}
@@ -1447,8 +1657,13 @@ if __name__ == "__main__":
 
             words_list = noun_set.pop()+', '+verb_set.pop()
             cloze_para_prompt = f"Generate a sentence that uses \"para\" exactly once in the sense of \"{para_reason}\" and contains these words or conjugations of these words ({words_list})."
-            spanish_sentence = chat(cloze_para_prompt)
-            spanish_sentence = spanish_sentence.replace('para','____')
+            
+            if DRY_RUN:
+                spanish_sentence = 'Spanish Sentence Placeholder: '+str(cloze_para_prompt)
+            else:
+                spanish_sentence = chat(cloze_para_prompt)
+            spanish_sentence = re.sub(r'\b[Pp]ara\b', '____', spanish_sentence, count=1)
+
             
             deck_name_to_card_dict[deck_full_name][spanish_sentence] = {"back": deck_specific_name,
                                                                        "tags":[deck_specific_name.replace(" ","_"),"notconfirmed"]}
@@ -1458,6 +1673,12 @@ if __name__ == "__main__":
         deck_list = []
         for k, v in deck_name_to_card_dict.items():
             deck_list.append(build_anki_deck(k,v))
+
+        num_cards = sum(len(cards) for cards in deck_name_to_card_dict.values())
+        print('Num Cards Created: '+str(num_cards))
+        print('SETS')
+        print('Noun: '+str(og_noun_set_size))
+        print('Verb: '+str(og_verb_set_size))
 
         ### So, generate an .apkg that is a collect of a few cards for many different decks
         # build_anki_deck(deck_name, deck_dict)
