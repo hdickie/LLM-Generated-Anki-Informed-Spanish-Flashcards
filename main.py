@@ -345,6 +345,9 @@ def due_display(queue: int, due: int, col_crt: int) -> str:
 
     return (EPOCH + timedelta(days=day_number)).isoformat()
 
+import sqlite3
+import pandas as pd
+
 def getAnkiCards():
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
@@ -356,44 +359,90 @@ def getAnkiCards():
 
     rows = cur.execute("""
         SELECT
-            c.id AS card_id,
-            c.nid,
-            c.did,
+            c.id   AS card_id,
+            c.nid  AS note_id,
+            c.did  AS deck_id,
             c.queue,
+            c.type,
             c.due,
             c.ivl,
+            c.reps,
+            c.lapses,
+            c.factor,
+            c.left,
+            c.odue,
+            c.odid,
+
             n.flds,
             n.tags,
-            n.mid
+            n.mid AS model_id
         FROM cards c
         JOIN notes n ON n.id = c.nid
         ORDER BY c.did, c.id
     """).fetchall()
 
-    row_count = 0
     card_data = []
     for r in rows:
-        row_count += 1
-        mid = int(r["mid"])
-        fieldnames = fieldmap.get(mid, [])
+        model_id = int(r["model_id"])
+        fieldnames = fieldmap.get(model_id, [])
         front, back = pick_front_back_from_fieldmap(r["flds"], fieldnames) if fieldnames else ("", "")
 
-        out = {
-            "deck": decks.get(int(r["did"]), f"Unknown(did={r['did']})"),
-            "note_id": int(r["nid"]),
-            "front": front,
-            "back": back,
-            "status": classify(int(r["queue"]), int(r["ivl"] or 0)),
-            "due": due_display(int(r["queue"]), int(r["due"]), col_crt),
-            "tags": (r["tags"] or "").strip().split(),
-        }
+        raw_tags = (r["tags"] or "").strip()
+        tags = raw_tags.split() if raw_tags else []
 
-        if not out["deck"].startswith("Espanol::Active Learning"):
+        deck_name = decks.get(int(r["deck_id"]), f"Unknown(did={r['deck_id']})")
+        if not deck_name.startswith("Espanol::Active Learning"):
             continue
 
+        # Seeds pulled directly from tags (you can parse later too; this is convenient)
+        noun_seeds = [t[len("nounseed:"):] for t in tags if t.startswith("nounseed:")]
+        verb_seeds = [t[len("verbseed:"):] for t in tags if t.startswith("verbseed:")]
+
+        out = {
+            # Identity / joins
+            "card_id": int(r["card_id"]),
+            "note_id": int(r["note_id"]),
+            "deck_id": int(r["deck_id"]),
+            "deck": deck_name,
+            "model_id": model_id,
+
+            # Content
+            "front": front,
+            "back": back,
+            "tags": tags,
+            "raw_tags": raw_tags,
+
+            # Scheduling (raw)
+            "queue": int(r["queue"]),
+            "type": int(r["type"]),
+            "due": int(r["due"]),
+            "ivl": int(r["ivl"] or 0),
+            "reps": int(r["reps"] or 0),
+            "lapses": int(r["lapses"] or 0),
+            "factor": int(r["factor"] or 0),
+            "left": int(r["left"] or 0),
+            "odue": int(r["odue"] or 0),
+            "odid": int(r["odid"] or 0),
+
+            # Your existing derived fields
+            "status": classify(int(r["queue"]), int(r["ivl"] or 0)),
+            "due_display": due_display(int(r["queue"]), int(r["due"]), col_crt),
+
+            # Seed extraction helpers
+            "noun_seeds": noun_seeds,   # list (usually length 0 or 1)
+            "verb_seeds": verb_seeds,   # list (usually length 0 or 1)
+            "has_nounseed": any(t.startswith("nounseed:") for t in tags),
+            "has_verbseed": any(t.startswith("verbseed:") for t in tags),
+
+            # Optional: quick label to filter “sentence cards” by tag conventions
+            # (adjust this to your real tag/note-type convention)
+            "is_sentence_card": ("SENTENCE" in tags) or ("sentence" in tags) or ("Sentence" in tags),
+        }
+
         card_data.append(out)
-    
+
     return pd.DataFrame(card_data)
+
 
 def main():
     con = sqlite3.connect(DB_PATH)
@@ -587,6 +636,387 @@ def build_anki_deck(deck_name, deck_dict):
     return my_deck
     # genanki.Package(my_deck).write_to_file(deck_file_name + ".apkg")
 
+import numpy as np
+import pandas as pd
+
+# class SeedPicker:
+#     def __init__(self, usage_stats: pd.DataFrame, pos: str, rng_seed: int = 0):
+#         print(usage_stats)
+#         self.df = usage_stats[usage_stats["part_of_speech"] == pos].copy()
+#         self.rng = np.random.default_rng(rng_seed)
+
+#         # Ensure missing columns exist
+#         for col in ["new_count", "young_count", "mature_count", "total_count"]:
+#             if col not in self.df.columns:
+#                 self.df[col] = 0
+
+#     def _score(self, row) -> float:
+#         # Tune these weights to match your pain (new/young drives workload)
+#         return (
+#             row["total_count"]
+#             + 3.0 * row["new_count"]
+#             + 2.0 * row["young_count"]
+#             + 0.5 * row["mature_count"]
+#         )
+
+#     def next(self) -> str:
+#         # Compute scores
+#         scores = self.df.apply(self._score, axis=1).to_numpy()
+
+#         # Pick from the best K to keep variety
+#         K = min(50, len(self.df))
+#         best_idx = np.argpartition(scores, K - 1)[:K]
+
+#         # Convert score -> sampling weight (lower score => higher weight)
+#         # Add epsilon to avoid division by 0.
+#         eps = 1e-6
+#         w = 1.0 / (scores[best_idx] + eps)
+#         w = w / w.sum()
+
+#         chosen_local = self.rng.choice(best_idx, p=w)
+#         word = self.df.iloc[chosen_local]["word"]
+
+#         # Optimistically account for the card you’re about to create
+#         self.df.iloc[chosen_local, self.df.columns.get_loc("new_count")] += 1
+#         self.df.iloc[chosen_local, self.df.columns.get_loc("total_count")] += 1
+
+#         return word
+
+class SeedPicker:
+    def __init__(self, usage_stats, rng_seed=0):
+        self.df = usage_stats.copy()
+        self.rng = np.random.default_rng(rng_seed)
+
+        for col in ["new_count", "young_count", "mature_count", "total_count"]:
+            if col not in self.df.columns:
+                self.df[col] = 0
+
+    def _score(self, row):
+        return (
+            row["total_count"]
+            + 3 * row["new_count"]
+            + 2 * row["young_count"]
+            + 0.5 * row["mature_count"]
+        )
+
+    def next(self):
+        scores = self.df.apply(self._score, axis=1).to_numpy()
+        K = min(50, len(self.df))
+        best_idx = np.argpartition(scores, K - 1)[:K]
+
+        weights = 1.0 / (scores[best_idx] + 1e-6)
+        weights /= weights.sum()
+
+        i = self.rng.choice(best_idx, p=weights)
+        word = self.df.iloc[i]["word"]
+
+        # optimistic update
+        self.df.at[self.df.index[i], "new_count"] += 1
+        self.df.at[self.df.index[i], "total_count"] += 1
+
+        return word
+
+from typing import Iterator, Tuple
+def make_generators(noun_usage_stats: pd.DataFrame,
+                    verb_usage_stats: pd.DataFrame,
+                    rng_seed: int = 42) -> Iterator[Tuple[str, str]]:
+    """
+    Returns an infinite generator yielding (noun, verb) pairs, biased toward
+    least-used / lowest-review-load seeds.
+
+    Expects each DF to have at least:
+      - 'word'
+    And optionally:
+      - 'new_count', 'young_count', 'mature_count', 'total_count'
+    """
+
+    noun_picker = SeedPicker(noun_usage_stats, rng_seed=rng_seed)
+    verb_picker = SeedPicker(verb_usage_stats, rng_seed=rng_seed + 1)
+
+    while True:
+        yield noun_picker.next(), verb_picker.next()
+
+
+import pandas as pd
+
+MATURE_IVL_DAYS_DEFAULT = 21  # tune if you want (Anki “mature” is commonly 21d+)
+
+def extractSeedStatistics(
+    cards_df: pd.DataFrame,
+    *,
+    mature_ivl_days: int = MATURE_IVL_DAYS_DEFAULT,
+    # sentence_only: bool = True,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Build usage stats for noun/verb seeds from your cards DF.
+
+    Returns:
+      (noun_usage_stats_df, verb_usage_stats_df)
+
+    Output schema (both DFs):
+      word, total_count, new_count, young_count, mature_count
+      (+ learning_count, suspended_count, buried_count as extra helpful columns)
+
+    Notes on classification (based on Anki card queue/ivl):
+      - new_count: queue == 0
+      - mature_count: queue == 2 and ivl >= mature_ivl_days
+      - young_count: everything else "active-ish" (review young + learning),
+        i.e. (queue == 2 and ivl < mature_ivl_days) OR (queue in {1,3})
+      - suspended/buried tracked separately
+    """
+
+    df = cards_df.copy()
+
+    # ---------- Decide which cards count as "SENTENCE cards" ----------
+    # if sentence_only:
+    #     if "is_sentence_card" in df.columns:
+    #         df = df[df["is_sentence_card"] == True]
+    #     else:
+    # Heuristic fallback: include only notes that actually have seed tags
+    # (this is usually what you want anyway)
+
+    # print('DF')
+    # print(df)
+
+    if "tags" in df.columns:
+        def _has_seed_tag(ts):
+            # print("TAGS:", ts)
+            if not ts:
+                return False
+            for t in ts:
+                # print("  checking tag:", t)
+                if t.startswith("posid:VERB") or t.startswith("posid:NOUN"):
+                    # print("  -> MATCH")
+                    return True
+            # print("  -> NO MATCH")
+            return False
+
+        df = df[df["tags"].apply(_has_seed_tag)]
+
+    else:
+        raise ValueError("cards_df must include 'tags' to filter sentence cards.")
+
+    # Make sure front is a clean "seed" string
+    df["front_seed"] = df["front"].fillna("").astype(str).str.strip()
+
+    def _has_tag(ts, tag):
+        return bool(ts) and (tag in ts)
+
+    # noun_seeds / verb_seeds become either [front_word] or []
+    df["noun_seeds"] = df.apply(
+        lambda r: [r["front_seed"]] if _has_tag(r["tags"], "posid:NOUN") and r["front_seed"] else [],
+        axis=1,
+    )
+
+    df["verb_seeds"] = df.apply(
+        lambda r: [r["front_seed"]] if _has_tag(r["tags"], "posid:VERB") and r["front_seed"] else [],
+        axis=1,
+    )
+
+    # print(df["verb_seeds"])
+
+    # ---------- Normalize required scheduling fields ----------
+    for col in ["queue", "ivl"]:
+        if col not in df.columns:
+            raise ValueError(f"cards_df is missing required column: '{col}'")
+    df["queue"] = df["queue"].fillna(0).astype(int)
+    df["ivl"] = df["ivl"].fillna(0).astype(int)
+
+    # ---------- Classification flags ----------
+    # Anki queue reference (common):
+    #  0=new, 1=learning, 2=review, 3=day learn, -1=suspended, -2=buried
+    df["is_new"]       = (df["queue"] == 0)
+    df["is_review"]    = (df["queue"] == 2)
+    df["is_learning"]  = df["queue"].isin([1, 3])
+    df["is_suspended"] = (df["queue"] == -1)
+    df["is_buried"]    = (df["queue"] == -2)
+
+    df["is_mature"] = df["is_review"] & (df["ivl"] >= mature_ivl_days)
+    df["is_young"]  = (df["is_review"] & (df["ivl"] < mature_ivl_days)) | df["is_learning"]
+
+    # ---------- Helper to build per-seed stats ----------
+    def _stats_for_seedcol(seed_col: str) -> pd.DataFrame:
+        tmp = df[["card_id", seed_col, "is_new", "is_young", "is_mature", "is_learning", "is_suspended", "is_buried"]].copy()
+
+        # One row per (card, seed) — if you ever allow multiple seeds per note, this handles it.
+        tmp = tmp.explode(seed_col, ignore_index=True)
+        tmp = tmp.rename(columns={seed_col: "word"})
+        tmp = tmp[tmp["word"].notna() & (tmp["word"].astype(str).str.len() > 0)]
+
+        # Aggregate: counts per word
+        out = (
+            tmp.groupby("word", as_index=False)
+               .agg(
+                    total_count=("card_id", "count"),
+                    new_count=("is_new", "sum"),
+                    young_count=("is_young", "sum"),
+                    mature_count=("is_mature", "sum"),
+                    learning_count=("is_learning", "sum"),
+                    suspended_count=("is_suspended", "sum"),
+                    buried_count=("is_buried", "sum"),
+                )
+        )
+
+        # Convenience: sort by “load” so least-used floats to top
+        out["load_score"] = (
+            out["total_count"]
+            + 3.0 * out["new_count"]
+            + 2.0 * out["young_count"]
+            + 0.5 * out["mature_count"]
+        )
+        out = out.sort_values(["load_score", "total_count", "word"], ascending=[True, True, True]).reset_index(drop=True)
+        return out
+
+    noun_usage_stats = _stats_for_seedcol("noun_seeds")
+    verb_usage_stats = _stats_for_seedcol("verb_seeds")
+
+    return noun_usage_stats, verb_usage_stats
+
+
+
+def add_hardcoded_seeds(usage_stats: pd.DataFrame, extra_words: list[str]) -> pd.DataFrame:
+    """
+    Ensure extra_words exist in usage_stats with 0 counts if unseen.
+    Expects usage_stats has column: 'word' and count columns.
+    """
+    extra = pd.DataFrame({"word": [w.strip() for w in extra_words if w and w.strip()]})
+    extra = extra.drop_duplicates()
+
+    # Merge: keep all existing + all extra
+    out = pd.concat([usage_stats[["word"]], extra], ignore_index=True).drop_duplicates(subset=["word"])
+
+    # Bring counts back (left join existing counts)
+    out = out.merge(usage_stats, on="word", how="left")
+
+    # Fill missing counts with 0
+    for col in ["total_count", "new_count", "young_count", "mature_count", "learning_count", "suspended_count", "buried_count"]:
+        if col in out.columns:
+            out[col] = out[col].fillna(0).astype(int)
+
+    # Recompute load_score if present/needed
+    if set(["total_count", "new_count", "young_count", "mature_count"]).issubset(out.columns):
+        out["load_score"] = (
+            out["total_count"]
+            + 3.0 * out["new_count"]
+            + 2.0 * out["young_count"]
+            + 0.5 * out["mature_count"]
+        )
+
+    return out
+
+MATURE_IVL_DAYS_DEFAULT = 21  # tweak if you want
+
+def extractObjectiveStatistics(
+    cards_df: pd.DataFrame,
+    *,
+    objective_prefix: str = "learningobjective:",
+    mature_ivl_days: int = MATURE_IVL_DAYS_DEFAULT,
+) -> pd.DataFrame:
+    """
+    Build usage stats per learning objective from a cards DF.
+
+    Expects cards_df columns:
+      - 'tags' (list[str] or space-delimited string)
+      - 'queue' (int), 'ivl' (int)
+      - optionally 'card_id'
+
+    Returns DF with:
+      objective, total_count, new_count, young_count, mature_count,
+      learning_count, suspended_count, buried_count, load_score
+    """
+
+    df = cards_df.copy()
+
+    # Normalize tags into list[str]
+    def _norm_tags(ts):
+        if ts is None:
+            return []
+        if isinstance(ts, str):
+            return ts.split()
+        return list(ts)
+
+    df["tags_norm"] = df["tags"].apply(_norm_tags)
+
+    # Extract objectives from tags: learningobjective:OBJECTIVE
+    def _extract_objectives(tag_list):
+        out = []
+        for t in tag_list:
+            if t.startswith(objective_prefix):
+                obj = t[len(objective_prefix):].strip()
+                if obj:
+                    out.append(obj)
+        return out
+
+    df["objectives"] = df["tags_norm"].apply(_extract_objectives)
+
+    # Early exit if nothing matches
+    if df["objectives"].apply(len).sum() == 0:
+        return pd.DataFrame(columns=[
+            "objective", "total_count", "new_count", "young_count", "mature_count",
+            "learning_count", "suspended_count", "buried_count", "load_score"
+        ])
+
+    # Ensure scheduling fields exist
+    if "queue" not in df.columns or "ivl" not in df.columns:
+        raise ValueError("cards_df must include 'queue' and 'ivl' columns.")
+
+    df["queue"] = df["queue"].fillna(0).astype(int)
+    df["ivl"] = df["ivl"].fillna(0).astype(int)
+
+    # Classification
+    df["is_new"]       = (df["queue"] == 0)
+    df["is_review"]    = (df["queue"] == 2)
+    df["is_learning"]  = df["queue"].isin([1, 3])
+    df["is_suspended"] = (df["queue"] == -1)
+    df["is_buried"]    = (df["queue"] == -2)
+
+    df["is_mature"] = df["is_review"] & (df["ivl"] >= mature_ivl_days)
+    df["is_young"]  = (df["is_review"] & (df["ivl"] < mature_ivl_days)) | df["is_learning"]
+
+    # Choose an id column
+    id_col = "card_id" if "card_id" in df.columns else None
+    if id_col is None:
+        df = df.reset_index().rename(columns={"index": "_row_id"})
+        id_col = "_row_id"
+
+    # Explode objectives
+    tmp = df[[id_col, "objectives", "is_new", "is_young", "is_mature",
+              "is_learning", "is_suspended", "is_buried"]].copy()
+
+    tmp = (
+        tmp.explode("objectives", ignore_index=True)
+           .rename(columns={"objectives": "objective"})
+    )
+
+    tmp = tmp[tmp["objective"].notna() & (tmp["objective"].astype(str).str.len() > 0)]
+
+    out = (
+        tmp.groupby("objective", as_index=False)
+           .agg(
+               total_count=(id_col, "count"),
+               new_count=("is_new", "sum"),
+               young_count=("is_young", "sum"),
+               mature_count=("is_mature", "sum"),
+               learning_count=("is_learning", "sum"),
+               suspended_count=("is_suspended", "sum"),
+               buried_count=("is_buried", "sum"),
+           )
+    )
+
+    out["load_score"] = (
+        out["total_count"]
+        + 3.0 * out["new_count"]
+        + 2.0 * out["young_count"]
+        + 0.5 * out["mature_count"]
+    )
+
+    out = out.sort_values(
+        ["load_score", "total_count", "objective"],
+        ascending=[True, True, True],
+    ).reset_index(drop=True)
+
+    return out
+
 
 if __name__ == "__main__":
 
@@ -596,9 +1026,11 @@ if __name__ == "__main__":
     DB_PATH = "/tmp/collection_ro.anki2"
 
     DRY_RUN = True
+    SHOW_CARDS = True
 
+    # cp "/Users/hume/Library/Application Support/Anki2/Hume/collection.anki2" /tmp/collection_ro.anki2
     if action == 'action1':
-        # cp "/Users/hume/Library/Application Support/Anki2/Hume/collection.anki2" /tmp/collection_ro.anki2
+        
         
 
         con = sqlite3.connect(DB_PATH)
@@ -1271,26 +1703,24 @@ if __name__ == "__main__":
         irregular_verbs_es_en = dict(irregular_ar_verbs__dict,**irregular_er_verbs__dict,**irregular_ir_verbs__dict)
         irregular_verbs_en_es = {v: k for k, v in irregular_verbs_es_en.items()}
 
-
-        # chatbot_content = (
-        #         "You are a Spanish sentence generator. "
-        #         "Respond with exactly ONE complete Spanish sentence. "
-        #         "Do NOT include explanations, translations, punctuation outside the sentence, "
-        #         "or any text in any language other than Spanish."
-        #     )
-
         cards = getAnkiCards()
-        noun_set = set()
-        verb_set = set(irregular_verbs_es_en.keys()) # add irreuglars to verb set !
+        noun_usage_stats, verb_usage_stats = extractSeedStatistics(cards, mature_ivl_days=21)
+        verb_usage_stats = add_hardcoded_seeds(verb_usage_stats, set(irregular_verbs_es_en.keys()) )
+        # print('noun_usage_stats:')
+        # print(noun_usage_stats)
+        # print('verb_usage_stats:')
+        # print(verb_usage_stats)
+        pair_gen = make_generators(noun_usage_stats, verb_usage_stats)
+        # e.g. noun, verb = next(pair_gen)
 
-        for _, row in cards.iterrows():
-            tags = row.loc['tags']
-            if not 'langid:es' in tags:
-                continue
-            if 'posid:NOUN' in tags:
-                noun_set.add(row["front"])
-            elif 'posid:VERB' in tags:
-                verb_set.add(row["front"])
+        # for _, row in cards.iterrows():
+        #     tags = row.loc['tags']
+        #     if not 'langid:es' in tags:
+        #         continue
+        #     if 'posid:NOUN' in tags:
+        #         noun_set.add(row["front"])
+        #     elif 'posid:VERB' in tags:
+        #         verb_set.add(row["front"])
         
         deck_and_prompt_tuples = []
 
@@ -1299,8 +1729,8 @@ if __name__ == "__main__":
         # TODO a vs. (no a)
         # TODO uses of se: reflexive and pronominal
         
-        og_noun_set_size = len(noun_set)
-        og_verb_set_size = len(verb_set)
+        # og_noun_set_size = len(noun_set)
+        # og_verb_set_size = len(verb_set)
 
         ser_use_cases = [
             'Identity',
@@ -1323,27 +1753,41 @@ if __name__ == "__main__":
         ]
 
         for ser_use_case in ser_use_cases:
-            words_list = noun_set.pop()+', '+verb_set.pop()
+            noun, verb = next(pair_gen)
+            words_list = noun+', '+verb
 
             ser_prompt = f"Generate a sentence that uses \"ser\" because of {ser_use_case} and contains these words or conjugations of these words: {words_list}."
-            deck_and_prompt_tuples.append((f"Ser - {ser_use_case}" , ser_prompt))
+            deck_and_prompt_tuples.append((f"Ser - {ser_use_case}" , (ser_prompt, words_list)))
+            del noun
+            del verb
+            del words_list
         del ser_use_case
 
         for estar_use_case in estar_use_cases:
-            words_list = noun_set.pop()+', '+verb_set.pop()
+            noun, verb = next(pair_gen)
+            words_list = noun+', '+verb
 
             estar_prompt = f"Generate a sentence that uses \"estar\" because of {estar_use_case} and contains these words or conjugations of these words: {words_list}."
-            deck_and_prompt_tuples.append((f"Estar - {estar_use_case}" , estar_prompt))
+            deck_and_prompt_tuples.append((f"Estar - {estar_use_case}" , (estar_prompt, words_list)))
+            del noun
+            del verb
+            del words_list
+        del estar_use_case
 
 
         se_triggers = [#'Reflexive se','Pronominal', # i feel like this should be handled separately
                        'Reciprocal se', 'Accidental / Unintended se', 'Passive se', 'Impersonal se']
         
         for se_trigger in se_triggers:
-            words_list = noun_set.pop()+', '+verb_set.pop()
+            noun, verb = next(pair_gen)
+            words_list = noun+', '+verb
 
             se_prompt_preamble_1 = f"Generate a sentence that uses \"se\" because of {se_trigger} and contains these words or conjugations of these words: {words_list}."
-            deck_and_prompt_tuples.append((f"Se - {se_trigger}" , se_prompt_preamble_1))
+            deck_and_prompt_tuples.append((f"Se - {se_trigger}" , (se_prompt_preamble_1, words_list)))
+            del noun
+            del verb
+            del words_list
+        del se_trigger
 
 
         # subjunctive_prompt_preamble_1 = "Generate a sentence that uses the subjunctive trigger phrase ({subj_trigger}) and contains these words or conjugations of these words ({words_list})."
@@ -1353,54 +1797,82 @@ if __name__ == "__main__":
                          "Non-existent / indefinite antecedent"]
 
         for subj_trigger in subj_triggers_1:
-            words_list = noun_set.pop()+', '+verb_set.pop()
+            noun, verb = next(pair_gen)
+            words_list = noun+', '+verb
 
             subjunctive_prompt_preamble_1 = f"Generate a sentence that uses the subjunctive because of {subj_trigger} and contains these words or conjugations of these words: {words_list}."
             #print(subjunctive_prompt_preamble_1)
-            deck_and_prompt_tuples.append((f"Subj - {subj_trigger}" , subjunctive_prompt_preamble_1))
+            deck_and_prompt_tuples.append((f"Subj - {subj_trigger}" , (subjunctive_prompt_preamble_1, words_list)))
+            del noun
+            del verb
+            del words_list
 
         del subj_trigger
-        del words_list
         
         sometimes_subj_triggers = ["cuando","mientras que","hasta que","después de que","tan pronto como"]
 
         for subj_trigger in sometimes_subj_triggers:
-            words_list = noun_set.pop()+', '+verb_set.pop()
+            noun, verb = next(pair_gen)
+            words_list = noun+', '+verb
             subjunctive_prompt_preamble_2 = f"Generate a sentence that uses the subjunctive trigger phrase \"{subj_trigger}\" because the statement is in the future or not realized and contains these words or conjugations of these words: {words_list}."
-            deck_and_prompt_tuples.append((f"Subj - {subj_trigger}" , subjunctive_prompt_preamble_2))
-            words_list = noun_set.pop()+', '+verb_set.pop()
+            deck_and_prompt_tuples.append((f"Subj - {subj_trigger}" , (subjunctive_prompt_preamble_2, words_list)))
+            del noun
+            del verb
+            del words_list
+
+            noun, verb = next(pair_gen)
+            words_list = noun+', '+verb
             subjunctive_prompt_preamble_3 = f"Generate a sentence that uses the phrase \"{subj_trigger}\" but does not trigger the subjunctive because the statement is habitual or in the past and contains these words or conjugations of these words: {words_list}."
-            deck_and_prompt_tuples.append((f"Subj - {subj_trigger}" , subjunctive_prompt_preamble_3))
+            deck_and_prompt_tuples.append((f"Subj - {subj_trigger}" , (subjunctive_prompt_preamble_3, words_list)))
+            del noun
+            del verb
+            del words_list
             # print(subjunctive_prompt_preamble_2)
             # print(subjunctive_prompt_preamble_3)
 
         del subj_trigger
-        del words_list
 
         depends_subj_triggers = ["aunque",
                                 #  "aun así","y eso que" #GPT reviewed my code and said these were not a good choice
                                  ]
 
         for subj_trigger in depends_subj_triggers:
-            words_list = noun_set.pop()+', '+verb_set.pop()
+            noun, verb = next(pair_gen)
+            words_list = noun+', '+verb
             subjunctive_prompt_preamble_4 = f"Generate a sentence that uses the phrase \"{subj_trigger}\" but DOES NOT use the subjunctive because of the intention of the speaker and contains these words or conjugations of these words: {words_list}."
-            deck_and_prompt_tuples.append((f"Subj - {subj_trigger}" , subjunctive_prompt_preamble_4))
-            words_list = noun_set.pop()+', '+verb_set.pop()
+            deck_and_prompt_tuples.append((f"Subj - {subj_trigger}" , (subjunctive_prompt_preamble_4, words_list)))
+            del noun
+            del verb
+            del words_list
+            
+            noun, verb = next(pair_gen)
+            words_list = noun+', '+verb
             subjunctive_prompt_preamble_5 = f"Generate a sentence that uses the phrase \"{subj_trigger}\" and DOES use the subjunctive because of the intention of the speaker and contains these words or conjugations of these words: {words_list}."
-            deck_and_prompt_tuples.append((f"Subj - {subj_trigger}" , subjunctive_prompt_preamble_5))
+            deck_and_prompt_tuples.append((f"Subj - {subj_trigger}" , (subjunctive_prompt_preamble_5, words_list)))
+            del noun
+            del verb
+            del words_list
             
             # print(subjunctive_prompt_preamble_4)
             # print(subjunctive_prompt_preamble_5)
 
         del subj_trigger
+
+        noun, verb = next(pair_gen)
+        words_list = noun+', '+verb
+        subjunctive_prompt_preamble_6 = f"Generate a sentence that uses the imperfect subjunctive and contains these words or conjugations of these words: {words_list}."
+        deck_and_prompt_tuples.append((f"Subj - Imperfect" , (subjunctive_prompt_preamble_6, words_list)))
+        del noun
+        del verb
         del words_list
 
-        words_list = noun_set.pop()+', '+verb_set.pop()
-        subjunctive_prompt_preamble_6 = f"Generate a sentence that uses the imperfect subjunctive and contains these words or conjugations of these words: {words_list}."
-        deck_and_prompt_tuples.append((f"Subj - Imperfect" , subjunctive_prompt_preamble_6))
-        words_list = noun_set.pop()+', '+verb_set.pop()
+        noun, verb = next(pair_gen)
+        words_list = noun+', '+verb
         subjunctive_prompt_preamble_7 = f"Generate a sentence that uses the pluperfect subjunctive and contains these words or conjugations of these words: {words_list}."
-        deck_and_prompt_tuples.append((f"Subj - Pluperfect" , subjunctive_prompt_preamble_7))
+        deck_and_prompt_tuples.append((f"Subj - Pluperfect" , (subjunctive_prompt_preamble_7, words_list)))
+        del noun
+        del verb
+        del words_list
 
         # print(subjunctive_prompt_preamble_6)
         # print(subjunctive_prompt_preamble_7)
@@ -1572,9 +2044,13 @@ if __name__ == "__main__":
 
         for comp_coord_cat, phrase_list in complex_coordination_dict.items():
             for phrase in phrase_list:
-                words_list = noun_set.pop()+', '+verb_set.pop()
+                noun, verb = next(pair_gen)
+                words_list = noun+', '+verb
                 comp_coord_prompt = f"Generate a sentence that uses \"{phrase}\" in the \"{comp_coord_cat}\" sense and contains these words or conjugations of these words: {words_list}."
-                deck_and_prompt_tuples.append((f"Comp Coord - {phrase}" , comp_coord_prompt))
+                deck_and_prompt_tuples.append((f"Comp Coord - {phrase}" , (comp_coord_prompt, words_list)))
+                del noun
+                del verb
+                del words_list
                 # print(comp_coord_prompt)
 
         # deck = {
@@ -1588,29 +2064,39 @@ if __name__ == "__main__":
         for d_p in deck_and_prompt_tuples:
             deck_specific_name = str(d_p[0])
             deck_full_name = 'Dave LLM Sentences :: '+str(d_p[0])
-            spanish_sentence_prompt = d_p[1]
+            spanish_sentence_prompt = d_p[1][0]
+            words_list = d_p[1][1]
+            noun = words_list.split(',')[0].strip()
+            verb = words_list.split(',')[1].strip()
             # spanish_sentence = chat(spanish_sentence_prompt)
             # english_sentnece = translate_es_to_en(spanish_sentence)
             spanish_sentence = "Spanish Sentence Placeholder: "+str(spanish_sentence_prompt)
-            english_sentence = "English Sentence Placeholder"
+            english_sentence = "English Sentence Placeholder: "+str(spanish_sentence_prompt)
             
-            print(spanish_sentence)
-            print(english_sentence)
-            print('-----------------------------------')
-            print('')
+            if SHOW_CARDS:
+                print(spanish_sentence)
+                print(english_sentence)
+                print('-----------------------------------')
+                print('')
             # time.sleep(1)
 
             if not deck_full_name in deck_name_to_card_dict.keys():
                 deck_name_to_card_dict[deck_full_name] = {}
             
-            deck_name_to_card_dict[deck_full_name][spanish_sentence] = {"back": english_sentence,
-                                                                       "tags":[deck_specific_name.replace(" ","_"),"notconfirmed"]}
+            deck_name_to_card_dict[deck_full_name][english_sentence] = {"back": spanish_sentence,
+                                                                       "tags":["learningobjective:"+deck_specific_name.replace(" ","_"),
+                                                                               "notconfirmed",
+                                                                                "nounseed:"+noun,
+                                                                                "verbseed:"+verb,
+                                                                               ]}
         del deck_specific_name
         del deck_full_name
         del spanish_sentence_prompt
         del spanish_sentence
         del english_sentence
-        
+        del noun
+        del verb
+
         por_reasons = ["Purpose / Cause",
             "Exchange",
             "Reason / Motive",
@@ -1636,7 +2122,8 @@ if __name__ == "__main__":
             if not deck_full_name in deck_name_to_card_dict.keys():
                 deck_name_to_card_dict[deck_full_name] = {}
 
-            words_list = noun_set.pop()+', '+verb_set.pop()
+            noun, verb = next(pair_gen)
+            words_list = noun+', '+verb
             cloze_por_prompt = f"Generate a sentence that uses \"por\" exactly once in the sense of \"{por_reason}\" and contains these words or conjugations of these words ({words_list})."
             if DRY_RUN:
                 spanish_sentence = 'Spanish Sentence Placeholder: '+str(cloze_por_prompt)
@@ -1645,9 +2132,15 @@ if __name__ == "__main__":
             spanish_sentence = re.sub(r'\b[Pp]or\b', '____', spanish_sentence, count=1)
             
             deck_name_to_card_dict[deck_full_name][spanish_sentence] = {"back": deck_specific_name,
-                                                                       "tags":[deck_specific_name.replace(" ","_"),"notconfirmed"]}
+                                                                       "tags":["learningobjective:"+deck_specific_name.replace(" ","_"),
+                                                                               "notconfirmed",
+                                                                                "nounseed:"+noun,
+                                                                                "verbseed:"+verb,
+                                                                               ]}
 
         del por_reason
+        del noun
+        del verb
 
         for para_reason in para_reasons:
             deck_specific_name = f"Para - {para_reason}"
@@ -1655,7 +2148,8 @@ if __name__ == "__main__":
             if not deck_full_name in deck_name_to_card_dict.keys():
                 deck_name_to_card_dict[deck_full_name] = {}
 
-            words_list = noun_set.pop()+', '+verb_set.pop()
+            noun, verb = next(pair_gen)
+            words_list = noun+', '+verb
             cloze_para_prompt = f"Generate a sentence that uses \"para\" exactly once in the sense of \"{para_reason}\" and contains these words or conjugations of these words ({words_list})."
             
             if DRY_RUN:
@@ -1666,9 +2160,19 @@ if __name__ == "__main__":
 
             
             deck_name_to_card_dict[deck_full_name][spanish_sentence] = {"back": deck_specific_name,
-                                                                       "tags":[deck_specific_name.replace(" ","_"),"notconfirmed"]}
+                                                                       "tags":["learningobjective:"+deck_specific_name.replace(" ","_"),
+                                                                               "notconfirmed",
+                                                                                "nounseed:"+noun,
+                                                                                "verbseed:"+verb
+                                                                                ]}
         del para_reason
+        del noun
+        del verb
         
+        #TODO here we can iterate over deck_name_to_card_dict and reduce output as needed
+
+        objective_stats = extractObjectiveStatistics(cards)
+        print(objective_stats.to_string())
         
         deck_list = []
         for k, v in deck_name_to_card_dict.items():
@@ -1676,9 +2180,6 @@ if __name__ == "__main__":
 
         num_cards = sum(len(cards) for cards in deck_name_to_card_dict.values())
         print('Num Cards Created: '+str(num_cards))
-        print('SETS')
-        print('Noun: '+str(og_noun_set_size))
-        print('Verb: '+str(og_verb_set_size))
 
         ### So, generate an .apkg that is a collect of a few cards for many different decks
         # build_anki_deck(deck_name, deck_dict)
@@ -1686,6 +2187,10 @@ if __name__ == "__main__":
         pkg = genanki.Package(deck_list)
         pkg.write_to_file('test_deck.apkg')
         print('Wrote test_deck.apkg')
+        # print('noun_usage_stats:')
+        # print(noun_usage_stats)
+        # print('verb_usage_stats:')
+        # print(verb_usage_stats)
 
 
     print('Done.')
