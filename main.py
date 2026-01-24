@@ -1,5 +1,9 @@
 #https://cvc.cervantes.es/ensenanza/biblioteca_ele/plan_curricular/indice.htm
 from __future__ import annotations
+
+from collections import defaultdict
+from typing import Iterable, Optional, Tuple, Dict, Any, Set
+from collections import Counter
 import requests
 import sqlite3
 import json
@@ -20,6 +24,13 @@ import math
 import wordfreq
 from wordfreq import top_n_list
 from wordfreq import zipf_frequency
+import pprint
+
+from collections import Counter, defaultdict
+from typing import Any, Dict, Iterable, Optional, Set, Tuple, List
+import unicodedata
+
+
 
 Lang = Literal["es", "en", "amb"]
 
@@ -1596,31 +1607,233 @@ def zipf_band(z: float) -> str:
     if z >= 4.0: return "4.0–4.49"
     return "<4.0"
 
-def coverage_report(universe_rows, known_set):
+
+def _norm_pos(p: str) -> str:
+    return str(p).strip().upper()
+
+
+def _norm_lemma(s: str) -> str:
+    # Keep accents (for display / identity) but normalize unicode form + whitespace
+    s = str(s).strip().lower()
+    s = unicodedata.normalize("NFKC", s)
+    s = " ".join(s.split())
+    return s
+
+
+def _fold_accents(s: str) -> str:
+    # Accent-insensitive matching key
+    s = _norm_lemma(s)
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    return s
+
+
+def print_zipf_rows(rows, *, min_total: int = 1):
     """
-    universe_rows: list of {lemma,pos,zipf,...}
-    known_set: set of (lemma,pos)
+    rows: list of (bucket_str, total:int, known:int, pct:float) sorted desc
     """
-    by_band = {}
+    for bucket, total, known, pct in rows:
+        if total < min_total:
+            continue
+        print(f"{bucket:>10}  total={total:5d}  known={known:5d}  coverage={pct:6.2f}%")
+
+
+def coverage_report(
+    universe_rows: Iterable[Dict[str, Any]],
+    known_set: Set[Tuple[str, str]],
+    *,
+    auto_known_zipf: Optional[float] = None,
+    pos_filter: Optional[Set[str]] = None,
+    decimals: int = 2,
+    accent_insensitive: bool = True,
+):
+    """
+    Coverage report + deck diagnostics.
+
+    Key fix:
+      - returns BOTH deck-only intersection and effective intersection (deck + auto-zipf credit)
+      - uses accent-folded canonical matching (optional) so 'albañileria' matches 'albañilería'
+
+    Returns dict with:
+      - rows: per-zipf-bucket rows (0.01 default)
+      - summary: key totals (deck/effective/universe/intersections/unmatched)
+      - intersections by POS for deck/effective
+      - unmatched-by-zipf examples from deck
+      - missing items in universe not covered (deck/effective) sorted high zipf first
+    """
+
+    pos_filter_norm = {_norm_pos(p) for p in pos_filter} if pos_filter else None
+
+    # --- normalize deck known set ---
+    deck_known_raw: Set[Tuple[str, str]] = {(_norm_lemma(l), _norm_pos(p)) for (l, p) in known_set}
+    # canonical (accent-folded) keys for matching
+    if accent_insensitive:
+        deck_known_can: Set[Tuple[str, str]] = {(_fold_accents(l), p) for (l, p) in deck_known_raw}
+    else:
+        deck_known_can = set(deck_known_raw)
+
+    # --- universe structures ---
+    universe_raw: Set[Tuple[str, str]] = set()
+    universe_can: Set[Tuple[str, str]] = set()
+    universe_zipf_by_can: Dict[Tuple[str, str], float] = {}
+    universe_display_by_can: Dict[Tuple[str, str], Tuple[str, str]] = {}  # canonical -> (lemma_raw, pos)
+
+    universe_by_pos = Counter()
+
+    by_bucket = defaultdict(lambda: {"total": 0, "deck_known": 0, "effective_known": 0})
+    fmt = f"{{:.{decimals}f}}"
+
+    # effective known canonical set starts from deck canonical
+    effective_known_can: Set[Tuple[str, str]] = set(deck_known_can)
+
+    # collect universe, build coverage + auto-known credit
     for r in universe_rows:
-        band = zipf_band(r["zipf"])
-        by_band.setdefault(band, {"total": 0, "known": 0})
-        by_band[band]["total"] += 1
-        if (r["lemma"], r["pos"]) in known_set:
-            by_band[band]["known"] += 1
+        lemma_raw = _norm_lemma(r["lemma"])
+        pos = _norm_pos(r["pos"])
+        z = float(r["zipf"])
 
-    # add pct
-    out = []
-    for band, d in by_band.items():
-        total = d["total"]
-        known = d["known"]
-        pct = (known / total * 100) if total else 0.0
-        out.append((band, total, known, pct))
+        if pos_filter_norm is not None and pos not in pos_filter_norm:
+            continue
 
-    # sort bands from high → low
-    order = ["6.0+", "5.0–5.99", "4.5–4.99", "4.0–4.49", "<4.0"]
-    out.sort(key=lambda x: order.index(x[0]) if x[0] in order else 999)
-    return out
+        key_raw = (lemma_raw, pos)
+        key_can = ((_fold_accents(lemma_raw) if accent_insensitive else lemma_raw), pos)
+
+        universe_raw.add(key_raw)
+        universe_can.add(key_can)
+        universe_by_pos[pos] += 1
+
+        # store zipf on canonical key (keep max if duplicates appear)
+        prev = universe_zipf_by_can.get(key_can)
+        if prev is None or z > prev:
+            universe_zipf_by_can[key_can] = z
+            universe_display_by_can[key_can] = (lemma_raw, pos)
+
+        # apply auto-known credit
+        if auto_known_zipf is not None and z >= auto_known_zipf:
+            effective_known_can.add(key_can)
+
+        bucket = fmt.format(z)
+        by_bucket[bucket]["total"] += 1
+
+        if key_can in deck_known_can:
+            by_bucket[bucket]["deck_known"] += 1
+        if key_can in effective_known_can:
+            by_bucket[bucket]["effective_known"] += 1
+
+    # --- build output rows for EFFECTIVE coverage by default (you can print deck too if you want) ---
+    rows_effective = []
+    rows_deck = []
+    for bucket, d in by_bucket.items():
+        total = int(d["total"])
+
+        dk = int(d["deck_known"])
+        dk_pct = (dk / total * 100.0) if total else 0.0
+        rows_deck.append((bucket, total, dk, dk_pct))
+
+        ek = int(d["effective_known"])
+        ek_pct = (ek / total * 100.0) if total else 0.0
+        rows_effective.append((bucket, total, ek, ek_pct))
+
+    rows_effective.sort(key=lambda x: float(x[0]), reverse=True)
+    rows_deck.sort(key=lambda x: float(x[0]), reverse=True)
+
+    # --- intersections ---
+    intersection_deck_can = universe_can & deck_known_can
+    intersection_effective_can = universe_can & effective_known_can
+
+    intersection_deck_by_pos = Counter(pos for (_, pos) in intersection_deck_can)
+    intersection_effective_by_pos = Counter(pos for (_, pos) in intersection_effective_can)
+
+    # per-pos coverage (deck/effective)
+    per_pos = {}
+    for pos, u_total in universe_by_pos.items():
+        dk = intersection_deck_by_pos.get(pos, 0)
+        ek = intersection_effective_by_pos.get(pos, 0)
+        per_pos[pos] = {
+            "universe_total": int(u_total),
+            "deck_known_in_universe": int(dk),
+            "deck_coverage_pct": (dk / u_total * 100.0) if u_total else 0.0,
+            "effective_known_in_universe": int(ek),
+            "effective_coverage_pct": (ek / u_total * 100.0) if u_total else 0.0,
+        }
+
+    # --- deck unmatched by zipf (canonical) ---
+    deck_unmatched_can = sorted(k for k in deck_known_can if k not in universe_can)
+    deck_unmatched_by_pos = Counter(pos for (_, pos) in deck_unmatched_can)
+
+    # show examples in original-ish form
+    deck_unmatched_examples = []
+    for k in deck_unmatched_can[:25]:
+        lemma_can, pos = k
+        # we no longer have original lemma for deck canonical; just show canonical lemma
+        deck_unmatched_examples.append((lemma_can, pos))
+
+    # --- deck low-zipf count among matched items ---
+    deck_low_zipf_lt_4 = 0
+    for k in deck_known_can:
+        z = universe_zipf_by_can.get(k)
+        if z is not None and z < 4.0:
+            deck_low_zipf_lt_4 += 1
+
+    # --- missing lists in universe (deck vs effective) ---
+    # sort by zipf desc
+    missing_deck = []
+    missing_effective = []
+    for key_can in universe_can:
+        z = universe_zipf_by_can.get(key_can, float("-inf"))
+        lemma_disp, pos = universe_display_by_can.get(key_can, (key_can[0], key_can[1]))
+        if key_can not in deck_known_can:
+            missing_deck.append((z, pos, lemma_disp))
+        if key_can not in effective_known_can:
+            missing_effective.append((z, pos, lemma_disp))
+
+    missing_deck.sort(key=lambda t: t[0], reverse=True)
+    missing_effective.sort(key=lambda t: t[0], reverse=True)
+
+    # --- deck/effective counts by POS ---
+    deck_by_pos = Counter(pos for (_, pos) in deck_known_can)
+    effective_by_pos = Counter(pos for (_, pos) in effective_known_can)
+
+    summary = {
+        "universe_size": len(universe_can),
+        "deck_size_known_set": len(deck_known_can),
+        "effective_known_size": len(effective_known_can),
+
+        # intersections
+        "intersection_deck_exact": len(intersection_deck_can),
+        "intersection_effective_exact": len(intersection_effective_can),
+
+        # deck diagnostics
+        "deck_unmatched_by_zipf_count": len(deck_unmatched_can),
+        "deck_low_zipf_lt_4_count": int(deck_low_zipf_lt_4),
+    }
+
+    return {
+        # zipf bucket rows (choose which to print)
+        "rows_effective": rows_effective,
+        "rows_deck": rows_deck,
+
+        # summary + breakdowns
+        "summary": summary,
+        "universe_by_pos": dict(universe_by_pos),
+        "deck_by_pos": dict(deck_by_pos),
+        "effective_known_by_pos": dict(effective_by_pos),
+
+        "intersection_deck_by_pos": dict(intersection_deck_by_pos),
+        "intersection_effective_by_pos": dict(intersection_effective_by_pos),
+        "per_pos_coverage": per_pos,
+
+        # missing lists (sorted high zipf first)
+        "missing_deck": missing_deck,
+        "missing_effective": missing_effective,
+
+        # deck unmatched to zipf universe
+        "deck_unmatched_by_pos": dict(deck_unmatched_by_pos),
+        "deck_unmatched_examples": deck_unmatched_examples,
+    }
+
+
+
 
 def top_unknown(universe_rows, known_set, *, band_min_zipf=4.5, limit=200):
     rows = [r for r in universe_rows
@@ -1636,6 +1849,7 @@ if __name__ == "__main__":
     # action = 'generate cards'
     action = 'measure fluency'
     # action = 'propose new words by frequency'
+    
     DB_PATH = "/tmp/collection_ro.anki2"
 
     DRY_RUN = True
@@ -2949,7 +3163,7 @@ if __name__ == "__main__":
         # top_list = top_n_list("es", 7200) #min zipf 4.0
         # top_n_lemmas_with_pos(7200, nlp)
 
-        universe = build_universe(nlp, top_k=50_000, min_zipf=4.0)
+        universe = build_universe(nlp, top_k=50_000, min_zipf=0)
 
         card_key_map = {}  # dict: card_id -> (lemma, pos)
 
@@ -2968,109 +3182,121 @@ if __name__ == "__main__":
         
         fsrs_df = pd.DataFrame(fsrs_rows)
 
-        known_set = build_known_set_from_retrievability(card_key_map, fsrs_df, threshold=0.9, agg="max")
+        known_set = build_known_set_from_retrievability(card_key_map, fsrs_df, threshold=0.5, agg="max") #0.9 is my IRL goal
 
-        report = coverage_report(universe, known_set)
-        for band, total, known, pct in report:
-            print(f"{band:>10}  total={total:5d}  known={known:5d}  coverage={pct:6.2f}%")
+        # report = coverage_report(universe, known_set, auto_known_zipf=4.9)
+        rep = coverage_report(
+            universe_rows=universe,
+            known_set=known_set,
+            auto_known_zipf=4.90,
+            pos_filter={"NOUN","VERB"},
+            decimals=2,
+            accent_insensitive=True,
+        )
 
-        # universe: list of dicts with keys lemma,pos,zipf
-        universe_keys = {(r["lemma"], r["pos"]) for r in universe}
-        universe_lemmas = {r["lemma"] for r in universe}
+        print(rep["summary"])
+        print_zipf_rows(rep["rows_deck"], min_total=5)       # like before
+        # or:
+        print_zipf_rows(rep["rows_effective"], min_total=5)  # if you want auto-credit included
 
-        known_lemmas_only = {lemma for (lemma, pos) in known_set}
+        # If intersection_deck_exact is low → tagging / normalization work
+        # If Zipf 4.5–5.0 coverage is low → make new cards
+        # If deck_low_zipf_lt_4_count explodes → rethink card ROI
+        # If deck_unmatched_by_zipf_count grows → decide if you want more MWEs or not
 
-        print("Universe size:", len(universe_keys))
-        print("Known size:", len(known_set))
+        # # universe: list of dicts with keys lemma,pos,zipf
+        # universe_keys = {(r["lemma"], r["pos"]) for r in universe}
+        # universe_lemmas = {r["lemma"] for r in universe}
 
-        print("Lemma-only intersection:", len(universe_lemmas & known_lemmas_only))
-        print("Exact (lemma,pos) intersection:", len(universe_keys & known_set))
+        # known_lemmas_only = {lemma for (lemma, pos) in known_set}
 
-        # top 50 most frequent universe items
-        top = sorted(universe, key=lambda r: r["zipf"], reverse=True)[:50]
+        # print("Universe size:", len(universe_keys))
+        # print("Known size:", len(known_set))
 
-        for r in top:
-            k = (r["lemma"], r["pos"])
-            hit = k in known_set
-            hit_lemma_only = r["lemma"] in {l for (l,_) in known_set}
-            print(f"{r['zipf']:.2f}  {r['pos']:<4}  {r['lemma']:<15}  exact={hit}  lemma_only={hit_lemma_only}")
-
-
-
+        # print("Lemma-only intersection:", len(universe_lemmas & known_lemmas_only))
+        # print("Exact (lemma,pos) intersection:", len(universe_keys & known_set))
     elif action == 'propose new words by frequency':
         pass
-        # nlp = spacy.load("es_core_news_sm")
-        # top_words = top_n_lemmas_with_pos(15_000, nlp) # 8100 3643 1509 (N, nouns, verbs)
+        nlp = spacy.load("es_core_news_sm")
 
-        # verb_count = 0
-        # noun_count = 0
-        # loop_count = 0
-        # for tw in top_words:
-        #     if tw[1] == 'NOUN':
-        #         noun_count += 1
-        #     elif tw[1] == 'VERB':
-        #         verb_count += 1
-        #     loop_count += 1
+        cards = getAnkiCards()
+        seed_stats = extractSeedStatistics(cards)
+        noun_df, verb_df = seed_stats
 
-        #     if loop_count % 100 == 0:
-        #         print(loop_count, noun_count, verb_count)
-        # print(len(top_words))
+        have_seed = set()
+        for row in noun_df.itertuples(index=False):
+            have_seed.add((row.word.lower(), "NOUN"))
 
-        # print(top_words[:20])
+        for row in verb_df.itertuples(index=False):
+            have_seed.add((row.word.lower(), "VERB"))
 
-        # from collections import Counter
-        # def zipf_band(z: float) -> str:
-        #     if z >= 6.0:
-        #         return "6.0+"
-        #     elif z >= 5.0:
-        #         return "5.0–5.99"
-        #     elif z >= 4.5:
-        #         return "4.5–4.99"
-        #     elif z >= 4.0:
-        #         return "4.0–4.49"
-        #     elif z >= 3.5:
-        #         return "3.5–3.99"
-        #     else:
-        #         return "<3.5"
+        # top_list = top_n_list("es", 7200) #min zipf 4.0
+        # top_n_lemmas_with_pos(7200, nlp)
 
-        # pairs = []
-        # band_counts = Counter()
+        universe = build_universe(nlp, top_k=50_000, min_zipf=4.0)
 
-        # top_list = top_n_list("es", 7200)
+        card_key_map = {}  # dict: card_id -> (lemma, pos)
 
-        # zs = [zipf_frequency(w, "es") for w in top_list]
+        # nouns
+        for row in noun_df.itertuples(index=False):
+            lemma = row.word.lower()
+            for cid in row.seed_card_ids:   # <-- list of card_ids
+                card_key_map[cid] = (lemma, "NOUN")
 
-        # print("min zipf:", min(zs))
-        # print("max zipf:", max(zs))
+        # verbs
+        for row in verb_df.itertuples(index=False):
+            lemma = row.word.lower()
+            for cid in row.seed_card_ids:   # <-- list of card_ids
+                card_key_map[cid] = (lemma, "VERB")
 
-        # # bucket by floor (6.x, 5.x, 4.x, 3.x ...)
-        # bins = Counter(int(z) for z in zs)
-        # print("bins by int(zipf):", dict(sorted(bins.items(), reverse=True)))
 
-        # # show a few 5.x if any exist
-        # fiveish = [w for w in top_list if 5.0 <= zipf_frequency(w, "es") < 6.0][:30]
-        # print("sample 5.x words:", fiveish)
-        # print("count 5.x:", sum(1 for w in top_list if 5.0 <= zipf_frequency(w, "es") < 6.0))
+        zipf_lo, zipf_hi = 4.0, 4.9 #I know everything higher :)))
 
-        # for w in top_list:
-        #     doc = nlp(w)
-        #     if not doc:
-        #         continue
+        missing = [
+            r for r in universe
+            if r["pos"] in {"NOUN", "VERB"}
+            and zipf_lo <= r["zipf"] < zipf_hi
+            and (r["lemma"], r["pos"]) not in have_seed
+        ]
+        missing.sort(key=lambda r: r["zipf"], reverse=True)
+        
+        # print("Top 30:", [(m["lemma"], m["pos"], round(m["zipf"], 2)) for m in missing[:30]])
+        for m in missing:
+            pass
+            # print(m)
+        print('Count Missing:'+str(len(missing)))
 
-        #     t = doc[0]
-        #     lemma = t.lemma_.lower()
-        #     pos = t.pos_
-        #     # z = zipf_frequency(lemma, "es")
-        #     z = zipf_frequency(w, "es")
+        lemma_in_sentences = set(
+            l for seeds in cards["noun_seeds"].tolist() + cards["verb_seeds"].tolist()
+            for l in seeds
+        )
 
-        #     pairs.append((lemma, pos, z))
+        known_lemmas_any_pos = {lemma for (lemma, pos) in have_seed}
 
-        #     band = zipf_band(z)
-        #     band_counts[band] += 1
+        for r in missing:
+            r["seen_in_sentences"] = r["lemma"] in lemma_in_sentences
+            r["known_other_pos"] = r["lemma"] in known_lemmas_any_pos
+            r["auto_known"] = r["zipf"] >= 4.8
 
-        # print("Zipf band counts (actual keys):")
-        # for band, count in band_counts.most_common():
-        #     print(f"{band:>10}: {count}")
+        counts = Counter(
+            (
+                r["auto_known"],
+                r["seen_in_sentences"],
+                r["known_other_pos"],
+            )
+            for r in missing
+        )
+        pprint.pprint(counts)
+        # Counter({(False, False, False): 2470, #true unknown
+        #  (True, False, False): 131, #gave myself credit bc high zipf
+        #  (False, False, True): 2}) #found under different POS
+
+
+        ### Code below here inspects the cards I already have
+        # universe = build_universe(nlp, top_k=50_000, min_zipf=0)
+        
+
+
 
 
     #TODO add auto-lemma tags to seed statistics method
