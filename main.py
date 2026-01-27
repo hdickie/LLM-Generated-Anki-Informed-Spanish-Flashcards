@@ -1,6 +1,6 @@
 #https://cvc.cervantes.es/ensenanza/biblioteca_ele/plan_curricular/indice.htm
 from __future__ import annotations
-
+from pathlib import Path
 from collections import defaultdict
 from typing import Iterable, Optional, Tuple, Dict, Any, Set
 from collections import Counter
@@ -426,6 +426,136 @@ def add_due_fields(df: pd.DataFrame, col_crt: int) -> pd.DataFrame:
     return df
 
 
+def get_anki_connection(db_path: Path) -> sqlite3.Connection:
+    con = sqlite3.connect(str(db_path))
+    con.row_factory = sqlite3.Row
+    return con
+
+def get_cards_notes_df(con: sqlite3.Connection) -> pd.DataFrame:
+    rows = con.execute("""
+        SELECT
+            c.id   AS card_id,
+            c.nid  AS note_id,
+            c.did  AS deck_id,
+            c.queue,
+            c.type,
+            c.due,
+            c.ivl,
+            c.reps,
+            c.lapses,
+            c.factor,
+            c.left,
+            c.odue,
+            c.odid,
+            n.flds,
+            n.tags,
+            n.mid AS model_id
+        FROM cards c
+        JOIN notes n ON n.id = c.nid
+    """).fetchall()
+    return pd.DataFrame([dict(r) for r in rows])
+
+def get_revlog_df(con: sqlite3.Connection) -> pd.DataFrame:
+    # revlog schema (Anki 2.1+): id, cid, usn, ease, ivl, lastIvl, factor, time, type
+
+    deck_root_ui = "Espanol::Active Learning::Dave LLM Sentences"
+    deck_root_us = deck_root_ui.replace("::", chr(31))  # '\x1f'
+
+    rows = con.execute("""
+        SELECT
+            -- revlog (event-level)
+            r.id        AS review_id,
+            r.cid       AS card_id,
+            r.ivl       AS ivl_after,
+            r.lastIvl   AS ivl_before,
+            r.time      AS time_ms,
+            r.type      AS review_type,
+            r.ease      AS ease,
+
+            -- cards (snapshot)
+            c.nid       AS note_id,
+            c.did       AS deck_id,
+            c.queue     AS queue,
+            c.type      AS type,
+            c.due       AS due,
+            c.ivl       AS ivl,
+            c.reps      AS reps,
+            c.lapses    AS lapses,
+            c.left      AS left,
+            c.odue      AS odue,
+            c.odid      AS odid,
+
+            -- notes (content)
+            n.flds      AS flds,
+            n.tags      AS tags,
+            n.mid       AS model_id,
+
+            -- deck (debug / context)
+            CAST(d.name AS TEXT) AS deck_name
+
+        FROM revlog r
+        JOIN cards c ON r.cid = c.id
+        JOIN notes n ON c.nid = n.id
+        JOIN decks d ON c.did = d.id
+
+        WHERE CAST(d.name AS TEXT) COLLATE BINARY = ?
+        OR CAST(d.name AS TEXT) COLLATE BINARY LIKE ? || char(31) || '%'
+
+        ORDER BY r.id;
+    """, (deck_root_us, deck_root_us)).fetchall()
+
+
+    df = pd.DataFrame([dict(r) for r in rows])
+
+    # df_first_review = pd.read_sql_query("""
+    #     SELECT
+    #         CAST(d.name AS TEXT) AS deck_name,
+    #         MIN(r.id) AS first_review_id_ms
+    #     FROM revlog r
+    #     JOIN cards c ON r.cid = c.id
+    #     JOIN decks d ON c.did = d.id
+    #     WHERE CAST(d.name AS TEXT) COLLATE BINARY = ?
+    #     OR CAST(d.name AS TEXT) COLLATE BINARY LIKE ? || char(31) || '%'
+    #     GROUP BY deck_name COLLATE BINARY
+    #     ORDER BY deck_name COLLATE BINARY;
+    # """, con, params=(deck_root_us, deck_root_us))
+
+    # df_first_review["first_review_dt"] = (
+    #     pd.to_datetime(df_first_review["first_review_id_ms"], unit="ms", utc=True)
+    #     .dt.tz_convert("America/Los_Angeles")
+    # )
+
+    df = df[df["note_id"].notna()] #drop rows for reviews of cards which no longer exist
+
+    # review_id is ms since epoch
+    df["review_dt"] = pd.to_datetime(df["review_id"], unit="ms", utc=True).dt.tz_convert("America/Los_Angeles")
+    df["time_s"] = df["time_ms"] / 1000.0
+
+    BUTTON_MAP = {
+        1: "again",
+        2: "hard",
+        3: "good",
+        4: "easy",
+    }
+
+    df["button"] = df["ease"].map(BUTTON_MAP)
+
+    return df
+
+# def join_revlog_cards(con: sqlite3.Connection) -> pd.DataFrame:
+#     cards = get_cards_notes_df(con)
+#     rev = get_revlog_df(con)
+
+#     df = rev.merge(cards, on="card_id", how="left", validate="many_to_one")
+
+#     # ease mapping:
+#     # 1=Again, 2=Hard, 3=Good, 4=Easy
+#     ease_map = {1: "again", 2: "hard", 3: "good", 4: "easy"}
+#     df["button"] = df["ease"].map(ease_map).fillna("unknown")
+
+#     return df
+
+
 def getAnkiCards():
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
@@ -628,48 +758,48 @@ def getAnkiSentenceCards():
     return card_data_df
 
 
-def main():
-    con = sqlite3.connect(DB_PATH)
-    con.row_factory = sqlite3.Row
-    cur = con.cursor()
+# def main():
+#     con = sqlite3.connect(DB_PATH)
+#     con.row_factory = sqlite3.Row
+#     cur = con.cursor()
 
-    decks = load_decks(cur)
-    fieldmap = load_fieldmap_from_fields_table(cur)
-    col_crt = cur.execute("SELECT crt FROM col").fetchone()[0]
+#     decks = load_decks(cur)
+#     fieldmap = load_fieldmap_from_fields_table(cur)
+#     col_crt = cur.execute("SELECT crt FROM col").fetchone()[0]
 
-    rows = cur.execute("""
-        SELECT
-            c.id AS card_id,
-            c.nid,
-            c.did,
-            c.queue,
-            c.due,
-            c.ivl,
-            n.flds,
-            n.tags,
-            n.mid
-        FROM cards c
-        JOIN notes n ON n.id = c.nid
-        ORDER BY c.did, c.id
-        LIMIT 20
-    """).fetchall()
+#     rows = cur.execute("""
+#         SELECT
+#             c.id AS card_id,
+#             c.nid,
+#             c.did,
+#             c.queue,
+#             c.due,
+#             c.ivl,
+#             n.flds,
+#             n.tags,
+#             n.mid
+#         FROM cards c
+#         JOIN notes n ON n.id = c.nid
+#         ORDER BY c.did, c.id
+#         LIMIT 20
+#     """).fetchall()
 
-    for r in rows:
-        mid = int(r["mid"])
-        fieldnames = fieldmap.get(mid, [])
-        front, back = pick_front_back_from_fieldmap(r["flds"], fieldnames) if fieldnames else ("", "")
+#     for r in rows:
+#         mid = int(r["mid"])
+#         fieldnames = fieldmap.get(mid, [])
+#         front, back = pick_front_back_from_fieldmap(r["flds"], fieldnames) if fieldnames else ("", "")
 
-        out = {
-            "deck": decks.get(int(r["did"]), f"Unknown(did={r['did']})"),
-            "front": front,
-            "back": back,
-            "status": classify(int(r["queue"]), int(r["ivl"] or 0)),
-            "due": due_display(int(r["queue"]), int(r["due"]), col_crt),
-            "tags": (r["tags"] or "").strip().split(),
-        }
-        print(out)
+#         out = {
+#             "deck": decks.get(int(r["did"]), f"Unknown(did={r['did']})"),
+#             "front": front,
+#             "back": back,
+#             "status": classify(int(r["queue"]), int(r["ivl"] or 0)),
+#             "due": due_display(int(r["queue"]), int(r["due"]), col_crt),
+#             "tags": (r["tags"] or "").strip().split(),
+#         }
+#         print(out)
 
-    con.close()
+#     con.close()
 
 def append_tag(note_id: int, tag: str) -> None:
     """
@@ -1891,7 +2021,8 @@ if __name__ == "__main__":
 
     # action = 'generate cards'
     # action = 'measure fluency'
-    action = 'propose new words by frequency'
+    # action = 'inspect revlog'
+    action = 'convert 2 sided cards to 1 sided cards'
     
     DB_PATH = "/tmp/collection_ro.anki2"
 
@@ -2652,7 +2783,7 @@ if __name__ == "__main__":
         ]
         estar_use_cases = [
             'Physical or emotional state',
-            'Location of People and Objects',
+            # 'Location of People and Objects',
             'Progressive Aspect',
             'Result of an Action',
             'Temporary / Contextual Manifestations'
@@ -2807,7 +2938,7 @@ if __name__ == "__main__":
         'y eso que'
         ]
         complex_coordination_dict["Causal"] = [
-            'porque',
+            # 'porque',
             'ya que',
             'puesto que',
             'dado que',
@@ -2848,7 +2979,7 @@ if __name__ == "__main__":
         ]
         complex_coordination_dict["Temporal"] = [
             'cuando',
-            'mientras',
+            # 'mientras',
             # 'mientras que', # a la GPT "mientras que is usually contrastive (“whereas”) more than temporal; mientras is the temporal one."
             'en cuanto',
             'tan pronto como',
@@ -3007,21 +3138,21 @@ if __name__ == "__main__":
         del verb
 
         por_reasons = ["Purpose / Cause",
-            "Exchange",
+            # "Exchange",
             "Reason / Motive",
             "Frequency / Duration",
             "Emotions / Opinions",
-            "Communication / Means",
+            # "Communication / Means",
             "Travel / Through"]
         para_reasons = [
-            "Aim / Purpose",
+            # "Aim / Purpose",
             "Target / Destination",
             "Time limit / Deadline",
             "Recipient",
-            "Audience / Use",
-            "Comparison / Opinion",
+            # "Audience / Use",
+            # "Comparison / Opinion",
             "Toward (movement)",
-            "Expectation / Outcome",
+            # "Expectation / Outcome",
             "Destination / Direction"
             ]
 
@@ -3166,6 +3297,7 @@ if __name__ == "__main__":
             note_id = row['note_id']
 
             lemma_pos_tuples = exractLemmaPOSTuplesFromSentence(spanish_sentence)
+            raise NotImplementedError
 
             
             tuples = [
@@ -3374,10 +3506,78 @@ if __name__ == "__main__":
             print('Wrote IRL_deck.apkg')
         
 
+    elif action == 'inspect revlog':
+        con = get_anki_connection(DB_PATH)
+        df = get_revlog_df(con)
+        print(df.columns)
+        print(df.head(1).T)
+        
+        # Index([
+        #     'review_id', --primary key
+        #     'card_id', 
+        #     'ivl_after', --in days
+        #     'ivl_before', --in days
+        #     'time_ms', --time spent answering the card in ms
+        #     'review_type', -- learn / relearn / review / filtered
+        #     'review_dt', --timestamp
+        #     'time_s', --time spent answering the card in s
+        #     'note_id', 
+        #     'deck_id', 
+        #     'queue', -- new / learning / review / relearning / suspended ; 0 / 1 / 2 / 3 / -1
+        #     'type', -- new / learn / review
+        #     'due',  --When the card is due: For reviews: days since collection creation. For learning: seconds offset. Only meaningful relative to Anki’s internal clock.
+        #     'reps', --total number of reviews ever
+        #     'ivl', --interval, usually matches interval after
+        #     'lapses', --failed as a review card
+        #     'left', --remaining learning steps
+        #     'odue', --Original due date (used when cards are in filtered decks).
+        #     'odid', --Original deck ID (also filtered-deck related).
+        #     'flds', --Raw note fields, concatenated with \x1f.
+        #     'tags', 
+        #     'model_id', 
+        #     'button'],
+        # dtype='object')
+        # print(df.head(1).T.to_string())
+        # print("Rows:", len(df))
+
+        counts_by_card_id = (
+            df.groupby("card_id")
+            .size()
+            .rename("review_count")
+            .sort_values(ascending=False)
+            .reset_index()
+        )
+        print(counts_by_card_id)
 
 
+        ### List cards I got right the first try in under 30 seconds
+        MAX_TIME_S = 30.0
+        GOOD_BUTTONS = {"good", "easy"}   # or include "hard" if you consider it "right"
 
-    #TODO add auto-lemma tags to seed statistics method
-    #TODO propose new words by frequency
+        # ensure chronological order
+        df_sorted = df.sort_values(["card_id", "review_id"])
+        first_attempt = df_sorted.groupby("card_id", as_index=False).first()
+
+        fast_and_correct_first = first_attempt[
+            (first_attempt["time_s"] <= MAX_TIME_S) &
+            (first_attempt["button"].isin(GOOD_BUTTONS))
+        ]
+
+        ### These I got right on the first attempt and have already been commented out from the source code
+        # 5   1769147300799  EspanolActive LearningDave LLM SentencesEstar - Location of People and Objects
+        # 24  1769147300895                     EspanolActive LearningDave LLM SentencesComp Coord - porque
+        # 35  1769147300965                   EspanolActive LearningDave LLM SentencesComp Coord - mientras
+        # 74  1769147301127                          EspanolActive LearningDave LLM SentencesPor - Exchange
+        # 75  1769147301135             EspanolActive LearningDave LLM SentencesPor - Communication / Means
+        # 76  1769147301139                    EspanolActive LearningDave LLM SentencesPara - Aim / Purpose
+        # 79  1769147301147                   EspanolActive LearningDave LLM SentencesPara - Audience / Use
+        # 80  1769147301149             EspanolActive LearningDave LLM SentencesPara - Comparison / Opinion
+        # 81  1769147301153            EspanolActive LearningDave LLM SentencesPara - Expectation / Outcome
+
+        print('Right first time card ids:')
+        print(fast_and_correct_first[["card_id", "deck_name"]].to_string())
+
+    elif action == 'convert 2 sided cards to 1 sided cards':
+        pass
 
     print('Done.')
