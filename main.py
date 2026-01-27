@@ -766,6 +766,64 @@ def chat(prompt: str) -> str:
     # Standard OpenAI-style response shape
     return data["choices"][0]["message"]["content"]
 
+def generate_spanish_word_definition(prompt: str) -> str:
+    url = f"{BASE_URL}/chat/completions"
+    headers = {"Content-Type": "application/json"}
+    if API_KEY:
+        headers["Authorization"] = f"Bearer {API_KEY}"
+
+    payload = {
+        "model": MODEL,
+        "messages": [
+        {
+            "role": "system",
+            "content": (
+                # "You are a Spanish sentence generator. "
+                # "Respond with exactly ONE complete Spanish sentence. "
+                # "Do NOT include explanations, translations, punctuation outside the sentence, "
+                # "or any text in any language other than Spanish."
+                # "Use the exact grammatical construction or connector requested."
+                # "Do not paraphrase or substitute it."
+                # "The sentence must demonstrate the requested grammatical reason clearly and unambiguously."
+                """
+                You are a Spanish lexicography assistant.
+
+                Given a single Spanish word or short phrase as input. 
+                The input may include an article (el, la, los, las, un, una, etc.) and may not be in lemma form.
+                Respond with exactly ONE concise definition in English suitable for the back of an Anki card.
+
+                Rules:
+                - Be brief and concrete (aim for one short sentence or a compact phrase).
+                - Capture the most common, neutral meaning.
+                - Interpret inflected or conjugated forms as their base meaning and respond with the unconjugated sense.
+                - Do NOT include examples, translations lists, usage notes, etymology, or regional commentary.
+                - Do NOT include articles unless they are essential to meaning.
+                - Do NOT include punctuation other than commas if strictly necessary.
+                - Do NOT include quotes, parentheses, emojis, or formatting.
+                - Do NOT mention parts of speech explicitly.
+                - Do NOT output the word itself.
+                - Output English only.
+                """
+            )
+            # "content": (
+            #     "You are a part of speech determiner for both English and Spanish. "
+            #     "Respond with exactly ONE part of speech: noun, verb, adjective, adverb, other "
+            #     "Do NOT include explanations, translations, punctuation outside the sentence. "
+            
+
+            # )
+        },
+        {"role": "user", "content": prompt}
+    ]
+    }
+
+    r = requests.post(url, headers=headers, json=payload, timeout=60)
+    r.raise_for_status()
+    data = r.json()
+
+    # Standard OpenAI-style response shape
+    return data["choices"][0]["message"]["content"]
+
 def build_anki_deck(deck_name, deck_dict):
     # e.g.
     # deck = {
@@ -975,8 +1033,6 @@ class SeedPicker:
 
         return score
 
-
-
     def next(self):
         # Compute scores (assumes: LOWER is better)
         scores = self.df.apply(self._score, axis=1).to_numpy(dtype=float)
@@ -1043,7 +1099,6 @@ class SeedPicker:
 
         return word
 
-
 from typing import Iterator, Tuple
 def make_generators(noun_usage_stats: pd.DataFrame,
                     verb_usage_stats: pd.DataFrame,
@@ -1063,7 +1118,6 @@ def make_generators(noun_usage_stats: pd.DataFrame,
 
     while True:
         yield noun_picker.next(), verb_picker.next()
-
 
 MATURE_IVL_DAYS_DEFAULT = 21  # tune if you want (Anki “mature” is commonly 21d+)
 
@@ -1207,7 +1261,10 @@ def extractSeedStatistics(
         )
 
         out["near_term_due_pressure"] = out["due_today_count"] + out["due_7d_count"]
-        out["lapse_rate"] = (out["lapses_sum"] / out["reps_sum"].replace(0, pd.NA)).fillna(0.0)
+        out["lapse_rate"] = (
+            out["lapses_sum"] / out["reps_sum"].replace(0, pd.NA)
+        ).fillna(0.0).infer_objects(copy=False)
+
 
         out["load_score"] = (
             out["total_count"]
@@ -1598,8 +1655,6 @@ def build_known_set_from_retrievability(card_key_map, fsrs_df, threshold=0.9, ag
 
     return known
 
-
-
 def zipf_band(z: float) -> str:
     if z >= 6.0: return "6.0+"
     if z >= 5.0: return "5.0–5.99"
@@ -1607,10 +1662,8 @@ def zipf_band(z: float) -> str:
     if z >= 4.0: return "4.0–4.49"
     return "<4.0"
 
-
 def _norm_pos(p: str) -> str:
     return str(p).strip().upper()
-
 
 def _norm_lemma(s: str) -> str:
     # Keep accents (for display / identity) but normalize unicode form + whitespace
@@ -1619,14 +1672,12 @@ def _norm_lemma(s: str) -> str:
     s = " ".join(s.split())
     return s
 
-
 def _fold_accents(s: str) -> str:
     # Accent-insensitive matching key
     s = _norm_lemma(s)
     s = unicodedata.normalize("NFKD", s)
     s = "".join(ch for ch in s if not unicodedata.combining(ch))
     return s
-
 
 def print_zipf_rows(rows, *, min_total: int = 1):
     """
@@ -1638,201 +1689,193 @@ def print_zipf_rows(rows, *, min_total: int = 1):
         print(f"{bucket:>10}  total={total:5d}  known={known:5d}  coverage={pct:6.2f}%")
 
 
+# from collections import Counter, defaultdict
+# from typing import Any, Dict, Iterable, Optional, Set, Tuple
+
 def coverage_report(
     universe_rows: Iterable[Dict[str, Any]],
+    all_cards_lemma_pos_tuples,
     known_set: Set[Tuple[str, str]],
     *,
-    auto_known_zipf: Optional[float] = None,
+    auto_known_zipf: Optional[float] = None,   # kept for compatibility; not used unless you want it
     pos_filter: Optional[Set[str]] = None,
     decimals: int = 2,
     accent_insensitive: bool = True,
 ):
     """
-    Coverage report + deck diagnostics.
+    Universe vs Deck vs Mastery report.
 
-    Key fix:
-      - returns BOTH deck-only intersection and effective intersection (deck + auto-zipf credit)
-      - uses accent-folded canonical matching (optional) so 'albañileria' matches 'albañilería'
-
-    Returns dict with:
-      - rows: per-zipf-bucket rows (0.01 default)
-      - summary: key totals (deck/effective/universe/intersections/unmatched)
-      - intersections by POS for deck/effective
-      - unmatched-by-zipf examples from deck
-      - missing items in universe not covered (deck/effective) sorted high zipf first
+    Outputs:
+      - total counts: universe / all cards you have / mastered cards
+      - zipf split (>= 4.0 and < 4.0), each split into:
+          * no_card
+          * has_card_not_mastered
+          * mastered
+        (these sum to the universe count in that zipf band)
+      - per-zipf-bucket rows (0.01 by default), descending:
+          bucket, universe_count, have_card_count, mastered_count
     """
 
     pos_filter_norm = {_norm_pos(p) for p in pos_filter} if pos_filter else None
 
-    # --- normalize deck known set ---
-    deck_known_raw: Set[Tuple[str, str]] = {(_norm_lemma(l), _norm_pos(p)) for (l, p) in known_set}
-    # canonical (accent-folded) keys for matching
-    if accent_insensitive:
-        deck_known_can: Set[Tuple[str, str]] = {(_fold_accents(l), p) for (l, p) in deck_known_raw}
-    else:
-        deck_known_can = set(deck_known_raw)
+    def canon_key(lemma: str, pos: str) -> Tuple[str, str]:
+        lemma_n = _norm_lemma(lemma)
+        pos_n = _norm_pos(pos)
+        if accent_insensitive:
+            lemma_n = _fold_accents(lemma_n)
+        return (lemma_n, pos_n)
 
-    # --- universe structures ---
-    universe_raw: Set[Tuple[str, str]] = set()
-    universe_can: Set[Tuple[str, str]] = set()
-    universe_zipf_by_can: Dict[Tuple[str, str], float] = {}
-    universe_display_by_can: Dict[Tuple[str, str], Tuple[str, str]] = {}  # canonical -> (lemma_raw, pos)
-
-    universe_by_pos = Counter()
-
-    by_bucket = defaultdict(lambda: {"total": 0, "deck_known": 0, "effective_known": 0})
     fmt = f"{{:.{decimals}f}}"
 
-    # effective known canonical set starts from deck canonical
-    effective_known_can: Set[Tuple[str, str]] = set(deck_known_can)
+    # --- canonical sets for your deck ---
+    all_cards_can = {canon_key(*card_key_map[cid]) for cid in all_cards_lemma_pos_tuples if cid in card_key_map}
+    mastered_can: Set[Tuple[str, str]] = {canon_key(l, p) for (l, p) in known_set}
 
-    # collect universe, build coverage + auto-known credit
+    # --- universe canonical + zipf per key ---
+    universe_can: Set[Tuple[str, str]] = set()
+    zipf_by_key: Dict[Tuple[str, str], float] = {}
+
     for r in universe_rows:
-        lemma_raw = _norm_lemma(r["lemma"])
-        pos = _norm_pos(r["pos"])
+        lemma = r["lemma"]
+        pos = r["pos"]
         z = float(r["zipf"])
 
-        if pos_filter_norm is not None and pos not in pos_filter_norm:
+        pos_n = _norm_pos(pos)
+        if pos_filter_norm is not None and pos_n not in pos_filter_norm:
             continue
 
-        key_raw = (lemma_raw, pos)
-        key_can = ((_fold_accents(lemma_raw) if accent_insensitive else lemma_raw), pos)
+        key = canon_key(lemma, pos_n)
+        universe_can.add(key)
 
-        universe_raw.add(key_raw)
-        universe_can.add(key_can)
-        universe_by_pos[pos] += 1
-
-        # store zipf on canonical key (keep max if duplicates appear)
-        prev = universe_zipf_by_can.get(key_can)
+        prev = zipf_by_key.get(key)
         if prev is None or z > prev:
-            universe_zipf_by_can[key_can] = z
-            universe_display_by_can[key_can] = (lemma_raw, pos)
+            zipf_by_key[key] = z
+    # del lemma
+    # del pos
+    # del z
 
-        # apply auto-known credit
-        if auto_known_zipf is not None and z >= auto_known_zipf:
-            effective_known_can.add(key_can)
+    # --- optional "auto known" credit (off by default) ---
+    # If you ever want "mastered" to include auto_known_zipf, you can enable this:
+    effective_mastered_can = set(mastered_can)
+    credit_only_can = set()
+    # print(f"effective_mastered_can before auto known:{len(effective_mastered_can)}")
+    if auto_known_zipf is not None:
+        for k in universe_can:
+            if zipf_by_key.get(k, float("-inf")) >= auto_known_zipf:
+                effective_mastered_can.add(k)
+                credit_only_can.add(k)
+    else:
+        effective_mastered_can = mastered_can
+    # print(f"effective_mastered_can after auto known #1:{len(effective_mastered_can)}")
+    # effective_mastered_can = mastered_can  # simplest: exactly what you said you wanted
+    # print(f"effective_mastered_can after auto known #2:{len(effective_mastered_can)}")
 
-        bucket = fmt.format(z)
-        by_bucket[bucket]["total"] += 1
+    # --- totals you asked for ---
+    summary = {
+        "universe_count": len(universe_can),
+        # both are useful: "how many cards you have" vs "how many unique lemma+pos you have"
+        "all_cards_count_raw": len(list(all_cards_lemma_pos_tuples)),
+        "all_cards_count_unique": len(all_cards_can),
+        "mastered_count_unique": len(effective_mastered_can),
+    }
 
-        if key_can in deck_known_can:
-            by_bucket[bucket]["deck_known"] += 1
-        if key_can in effective_known_can:
-            by_bucket[bucket]["effective_known"] += 1
+    # --- zipf split breakdowns over the UNIVERSE ---
+    def split_breakdown(predicate):
+        no_card = 0
+        has_card_not_mastered = 0
 
-    # --- build output rows for EFFECTIVE coverage by default (you can print deck too if you want) ---
-    rows_effective = []
-    rows_deck = []
-    for bucket, d in by_bucket.items():
-        total = int(d["total"])
+        mastered_with_card = 0
+        mastered_credit_only = 0
 
-        dk = int(d["deck_known"])
-        dk_pct = (dk / total * 100.0) if total else 0.0
-        rows_deck.append((bucket, total, dk, dk_pct))
+        total = 0
 
-        ek = int(d["effective_known"])
-        ek_pct = (ek / total * 100.0) if total else 0.0
-        rows_effective.append((bucket, total, ek, ek_pct))
+        for k in universe_can:
+            z = zipf_by_key.get(k, float("-inf"))
+            if not predicate(z):
+                continue
+            total += 1
 
-    rows_effective.sort(key=lambda x: float(x[0]), reverse=True)
-    rows_deck.sort(key=lambda x: float(x[0]), reverse=True)
+            in_deck = (k in all_cards_can)
+            is_mastered = (k in effective_mastered_can)
 
-    # --- intersections ---
-    intersection_deck_can = universe_can & deck_known_can
-    intersection_effective_can = universe_can & effective_known_can
+            if is_mastered:
+                if in_deck:
+                    mastered_with_card += 1
+                else:
+                    mastered_credit_only += 1
+            else:
+                if in_deck:
+                    has_card_not_mastered += 1
+                else:
+                    no_card += 1
 
-    intersection_deck_by_pos = Counter(pos for (_, pos) in intersection_deck_can)
-    intersection_effective_by_pos = Counter(pos for (_, pos) in intersection_effective_can)
+        mastered_total = mastered_with_card + mastered_credit_only
 
-    # per-pos coverage (deck/effective)
-    per_pos = {}
-    for pos, u_total in universe_by_pos.items():
-        dk = intersection_deck_by_pos.get(pos, 0)
-        ek = intersection_effective_by_pos.get(pos, 0)
-        per_pos[pos] = {
-            "universe_total": int(u_total),
-            "deck_known_in_universe": int(dk),
-            "deck_coverage_pct": (dk / u_total * 100.0) if u_total else 0.0,
-            "effective_known_in_universe": int(ek),
-            "effective_coverage_pct": (ek / u_total * 100.0) if u_total else 0.0,
+        # invariants:
+        #   no_card + has_card_not_mastered + mastered_total == total
+        #   mastered_total == mastered_with_card + mastered_credit_only
+        return {
+            "universe_total": total,
+            "no_card": no_card,
+            "has_card_not_mastered": has_card_not_mastered,
+
+            # keep a simple "mastered" for quick reading, but make it explicit
+            "mastered_with_card": mastered_with_card,
+            "mastered_credit_only": mastered_credit_only,
+            "mastered_total": mastered_total,
         }
 
-    # --- deck unmatched by zipf (canonical) ---
-    deck_unmatched_can = sorted(k for k in deck_known_can if k not in universe_can)
-    deck_unmatched_by_pos = Counter(pos for (_, pos) in deck_unmatched_can)
 
-    # show examples in original-ish form
-    deck_unmatched_examples = []
-    for k in deck_unmatched_can[:25]:
-        lemma_can, pos = k
-        # we no longer have original lemma for deck canonical; just show canonical lemma
-        deck_unmatched_examples.append((lemma_can, pos))
+    high_zipf = split_breakdown(lambda z: z >= 4.0)
+    low_zipf = split_breakdown(lambda z: z < 4.0)
 
-    # --- deck low-zipf count among matched items ---
-    deck_low_zipf_lt_4 = 0
-    for k in deck_known_can:
-        z = universe_zipf_by_can.get(k)
-        if z is not None and z < 4.0:
-            deck_low_zipf_lt_4 += 1
+    # --- per 0.01 zipf bucket rows (descending) ---
+    by_bucket = defaultdict(lambda: {"universe": 0, "have_card": 0, "mastered": 0})
 
-    # --- missing lists in universe (deck vs effective) ---
-    # sort by zipf desc
-    missing_deck = []
-    missing_effective = []
-    for key_can in universe_can:
-        z = universe_zipf_by_can.get(key_can, float("-inf"))
-        lemma_disp, pos = universe_display_by_can.get(key_can, (key_can[0], key_can[1]))
-        if key_can not in deck_known_can:
-            missing_deck.append((z, pos, lemma_disp))
-        if key_can not in effective_known_can:
-            missing_effective.append((z, pos, lemma_disp))
+    for k in universe_can:
+        z = zipf_by_key.get(k, float("-inf"))
+        bucket = fmt.format(z)
+        by_bucket[bucket]["universe"] += 1
+        if k in all_cards_can:
+            by_bucket[bucket]["have_card"] += 1
+        if k in effective_mastered_can:
+            by_bucket[bucket]["mastered"] += 1
 
-    missing_deck.sort(key=lambda t: t[0], reverse=True)
-    missing_effective.sort(key=lambda t: t[0], reverse=True)
+    rows = []
+    for bucket, d in by_bucket.items():
+        rows.append((
+            bucket,
+            int(d["universe"]),
+            int(d["have_card"]),
+            int(d["mastered"]),
+        ))
+    rows.sort(key=lambda x: float(x[0]), reverse=True)
 
-    # --- deck/effective counts by POS ---
-    deck_by_pos = Counter(pos for (_, pos) in deck_known_can)
-    effective_by_pos = Counter(pos for (_, pos) in effective_known_can)
+    deck_only_can = all_cards_can - universe_can
 
-    summary = {
-        "universe_size": len(universe_can),
-        "deck_size_known_set": len(deck_known_can),
-        "effective_known_size": len(effective_known_can),
+    not_in_zipf = {
+        "universe_total": len(deck_only_can),
+        "no_card": 0,
+        "has_card_not_mastered": len(deck_only_can - effective_mastered_can),
 
-        # intersections
-        "intersection_deck_exact": len(intersection_deck_can),
-        "intersection_effective_exact": len(intersection_effective_can),
-
-        # deck diagnostics
-        "deck_unmatched_by_zipf_count": len(deck_unmatched_can),
-        "deck_low_zipf_lt_4_count": int(deck_low_zipf_lt_4),
+        "mastered_with_card": len(deck_only_can & effective_mastered_can),
+        "mastered_credit_only": 0,
+        "mastered_total": len(deck_only_can & effective_mastered_can),
     }
+
 
     return {
-        # zipf bucket rows (choose which to print)
-        "rows_effective": rows_effective,
-        "rows_deck": rows_deck,
-
-        # summary + breakdowns
         "summary": summary,
-        "universe_by_pos": dict(universe_by_pos),
-        "deck_by_pos": dict(deck_by_pos),
-        "effective_known_by_pos": dict(effective_by_pos),
 
-        "intersection_deck_by_pos": dict(intersection_deck_by_pos),
-        "intersection_effective_by_pos": dict(intersection_effective_by_pos),
-        "per_pos_coverage": per_pos,
+        "zipf_split": {
+            "high_zipf_ge_4": high_zipf,
+            "low_zipf_lt_4": low_zipf,
+            "not_in_zipf": not_in_zipf, 
+        },
 
-        # missing lists (sorted high zipf first)
-        "missing_deck": missing_deck,
-        "missing_effective": missing_effective,
-
-        # deck unmatched to zipf universe
-        "deck_unmatched_by_pos": dict(deck_unmatched_by_pos),
-        "deck_unmatched_examples": deck_unmatched_examples,
+        # (bucket, universe_count, have_card_count, mastered_count)
+        "rows_by_zipf_bucket": rows,
     }
-
-
 
 
 def top_unknown(universe_rows, known_set, *, band_min_zipf=4.5, limit=200):
@@ -1847,8 +1890,8 @@ if __name__ == "__main__":
     print('Start.')
 
     # action = 'generate cards'
-    action = 'measure fluency'
-    # action = 'propose new words by frequency'
+    # action = 'measure fluency'
+    action = 'propose new words by frequency'
     
     DB_PATH = "/tmp/collection_ro.anki2"
 
@@ -3187,6 +3230,7 @@ if __name__ == "__main__":
         # report = coverage_report(universe, known_set, auto_known_zipf=4.9)
         rep = coverage_report(
             universe_rows=universe,
+            all_cards_lemma_pos_tuples=card_key_map,
             known_set=known_set,
             auto_known_zipf=4.90,
             pos_filter={"NOUN","VERB"},
@@ -3194,10 +3238,22 @@ if __name__ == "__main__":
             accent_insensitive=True,
         )
 
-        print(rep["summary"])
-        print_zipf_rows(rep["rows_deck"], min_total=5)       # like before
-        # or:
-        print_zipf_rows(rep["rows_effective"], min_total=5)  # if you want auto-credit included
+        print(rep)
+        # {'summary': 
+        # {'universe_count': 22259, 
+        # 'all_cards_count_raw': 799, 
+        # 'all_cards_count_unique': 785, 
+        # 'mastered_count_unique': 439}, 
+        # 'zipf_split': {'high_zipf_ge_4': 
+        #     {'universe_total': 3177, 
+        #     'no_card': 3051, 
+        #     'has_card_not_mastered': 46, 
+        #     'mastered': 80}, 
+        # 'low_zipf_lt_4': 
+            # {'universe_total': 19082, 
+            # 'no_card': 18846, 
+            # 'has_card_not_mastered': 114, 
+            # 'mastered': 122}}, 
 
         # If intersection_deck_exact is low → tagging / normalization work
         # If Zipf 4.5–5.0 coverage is low → make new cards
@@ -3273,10 +3329,13 @@ if __name__ == "__main__":
 
         known_lemmas_any_pos = {lemma for (lemma, pos) in have_seed}
 
+        
         for r in missing:
             r["seen_in_sentences"] = r["lemma"] in lemma_in_sentences
             r["known_other_pos"] = r["lemma"] in known_lemmas_any_pos
             r["auto_known"] = r["zipf"] >= 4.8
+            if not r["seen_in_sentences"] and not r["known_other_pos"] and not r["auto_known"]:
+                print(r)
 
         counts = Counter(
             (
@@ -3292,8 +3351,27 @@ if __name__ == "__main__":
         #  (False, False, True): 2}) #found under different POS
 
 
-        ### Code below here inspects the cards I already have
-        # universe = build_universe(nlp, top_k=50_000, min_zipf=0)
+        # generate_spanish_word_definition
+        deck_name_to_card_dict = {}
+
+
+        deck_list = []
+        for k, v in deck_name_to_card_dict.items():
+            deck_list.append(build_anki_deck(k,v))
+
+        num_cards = sum(len(cards) for cards in deck_name_to_card_dict.values())
+        print('Num Cards Created: '+str(num_cards))
+
+        ### So, generate an .apkg that is a collect of a few cards for many different decks
+        # build_anki_deck(deck_name, deck_dict)
+
+        pkg = genanki.Package(deck_list)
+        if DRY_RUN:
+            pkg.write_to_file('test_deck.apkg')
+            print('Wrote test_deck.apkg')
+        else:
+            pkg.write_to_file('IRL_deck.apkg')
+            print('Wrote IRL_deck.apkg')
         
 
 
