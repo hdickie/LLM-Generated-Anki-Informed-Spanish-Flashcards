@@ -602,9 +602,16 @@ def getAnkiCards():
         if not deck_name.startswith("Espanol::Active Learning"):
             continue
 
-        # Seeds pulled directly from tags (you can parse later too; this is convenient)
-        noun_seeds = [t[len("nounseed:"):] for t in tags if t.startswith("nounseed:")]
-        verb_seeds = [t[len("verbseed:"):] for t in tags if t.startswith("verbseed:")]
+        noun_seeds = (
+            [t[len("nounseed:"):] for t in tags if t.startswith("nounseed:")]
+            + [t[len("auto-lemma-noun:"):] for t in tags if t.startswith("auto-lemma-noun:")]
+        )
+
+        verb_seeds = (
+            [t[len("verbseed:"):] for t in tags if t.startswith("verbseed:")]
+            + [t[len("auto-lemma-verb:"):] for t in tags if t.startswith("auto-lemma-verb:")]
+        )
+
 
         out = {
             # Identity / joins
@@ -2019,10 +2026,10 @@ if __name__ == "__main__":
 
     print('Start.')
 
-    # action = 'generate cards'
+    action = 'generate cards'
     # action = 'measure fluency'
     # action = 'inspect revlog'
-    action = 'convert 2 sided cards to 1 sided cards'
+    # action = 'convert 2 sided cards to 1 sided cards'
     
     DB_PATH = "/tmp/collection_ro.anki2"
 
@@ -3254,11 +3261,14 @@ if __name__ == "__main__":
         # 169                             Ser_-_Time,_Date,_Events
         
         deck_list = []
+        counter = 0
         for k, v in deck_name_to_card_dict.items():
+            # print(k)
+            # print(counter)
+            counter += 1
             deck_list.append(build_anki_deck(k,v))
 
-        num_cards = sum(len(cards) for cards in deck_name_to_card_dict.values())
-        print('Num Cards Created: '+str(num_cards))
+        print('Num Cards Created: '+str(counter))
 
         ### So, generate an .apkg that is a collect of a few cards for many different decks
         # build_anki_deck(deck_name, deck_dict)
