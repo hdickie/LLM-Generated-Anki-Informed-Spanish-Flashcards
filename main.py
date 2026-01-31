@@ -281,7 +281,6 @@ class SpanishLemmaWordnet:
             )
         return rows
 
-
 def anki(action: str, **params) -> Any:
     payload = {"action": action, "version": 6, "params": params}
     r = requests.post(ANKI_CONNECT_URL, json=payload, timeout=60)
@@ -291,8 +290,8 @@ def anki(action: str, **params) -> Any:
         raise RuntimeError(data["error"])
     return data["result"]
 
-def load_decks(cur) -> Dict[int, str]:
-    return {int(did): name for did, name in cur.execute("SELECT id, name FROM decks")}
+# def load_decks(cur) -> Dict[int, str]:
+#     return {int(did): name for did, name in cur.execute("SELECT id, name FROM decks")}
 
 def load_decks(cur):
     # Deck names use \x1f as hierarchy separator in your DB; convert to Anki-style "::"
@@ -398,8 +397,6 @@ def due_display(queue: int, due: int, col_crt: int) -> str:
 
     return (EPOCH + timedelta(days=day_number)).isoformat()
 
-
-
 def add_due_fields(df: pd.DataFrame, col_crt: int) -> pd.DataFrame:
     now_ts = int(time.time())
     today_day = (now_ts - int(col_crt)) // 86400
@@ -424,7 +421,6 @@ def add_due_fields(df: pd.DataFrame, col_crt: int) -> pd.DataFrame:
     df["due_in_days"] = due_in_days
 
     return df
-
 
 def get_anki_connection(db_path: Path) -> sqlite3.Connection:
     con = sqlite3.connect(str(db_path))
@@ -2026,14 +2022,14 @@ if __name__ == "__main__":
 
     print('Start.')
 
-    action = 'generate cards'
-    # action = 'measure fluency'
+    # action = 'generate cards'
+    action = 'measure fluency'
     # action = 'inspect revlog'
     # action = 'convert 2 sided cards to 1 sided cards'
     
     DB_PATH = "/tmp/collection_ro.anki2"
 
-    DRY_RUN = True
+    DRY_RUN = False
     SHOW_CARDS = False
 
     # cp "/Users/hume/Library/Application Support/Anki2/Hume/collection.anki2" /tmp/collection_ro.anki2
@@ -2104,7 +2100,7 @@ if __name__ == "__main__":
                 pos_tag = chat(out["front"]) 
                 print(out["front"], pos_tag)
                 append_tag(out["note_id"], pos_tag)
-                time.sleep(1)
+                # time.sleep(1)
 
 
             # print(out)
@@ -2739,6 +2735,8 @@ if __name__ == "__main__":
         # TODO emotion vocab alone
         # TODO emotion words (in a sentence) and con vs. por vs. de
         # TODO que / quien / el que / lo que / el cual (esp. relative clauses with/without antecedent)
+        # TODO eso vs. ese vs. (are there more???)
+        # TODO aqeul vs. aquella vs. (others)
         # por vs. para with verbs that bias one (luchar por, optar por, servir para, estar para)
         # ser + adjective vs. estar + adjective (meaning shift) ( e.g. listo, aburrido, interesado, seguro, consciente, atento )
 
@@ -2819,104 +2817,108 @@ if __name__ == "__main__":
         del estar_use_case
 
 
-        se_triggers = [#'Reflexive se','Pronominal', # i feel like this should be handled separately
-                       'Reciprocal se', 'Accidental / Unintended se', 'Passive se', 'Impersonal se']
-        
-        for se_trigger in se_triggers:
-            noun, verb = next(pair_gen)
-            words_list = noun+', '+verb
+        k = 5
 
-            se_prompt_preamble_1 = f"Generate a sentence that uses \"se\" because of {se_trigger} and contains these words or conjugations of these words: {words_list}."
-            deck_and_prompt_tuples.append((f"Se - {se_trigger}" , (se_prompt_preamble_1, words_list)))
-            del noun
-            del verb
-            del words_list
-        del se_trigger
-
-
-        # subjunctive_prompt_preamble_1 = "Generate a sentence that uses the subjunctive trigger phrase ({subj_trigger}) and contains these words or conjugations of these words ({words_list})."
-
-        subj_triggers_1 = ["Volition / Influence","Emotion / Value Judgement","Doubt / Uncertainty",
-                         "Purpose / Condition (Time specifically)","Purpose / Condition (Condition specifically)",
-                         "Non-existent / indefinite antecedent"]
-
-        for subj_trigger in subj_triggers_1:
-            noun, verb = next(pair_gen)
-            words_list = noun+', '+verb
-
-            subjunctive_prompt_preamble_1 = f"Generate a sentence that uses the subjunctive because of {subj_trigger} and contains these words or conjugations of these words: {words_list}."
-            #print(subjunctive_prompt_preamble_1)
-            deck_and_prompt_tuples.append((f"Subj - {subj_trigger}" , (subjunctive_prompt_preamble_1, words_list)))
-            del noun
-            del verb
-            del words_list
-
-        del subj_trigger
-        
-        sometimes_subj_triggers = ["cuando","mientras que","hasta que","después de que","tan pronto como"]
-
-        for subj_trigger in sometimes_subj_triggers:
-            noun, verb = next(pair_gen)
-            words_list = noun+', '+verb
-            subjunctive_prompt_preamble_2 = f"Generate a sentence that uses the subjunctive trigger phrase \"{subj_trigger}\" because the statement is in the future or not realized and contains these words or conjugations of these words: {words_list}."
-            deck_and_prompt_tuples.append((f"Subj - {subj_trigger}" , (subjunctive_prompt_preamble_2, words_list)))
-            del noun
-            del verb
-            del words_list
-
-            noun, verb = next(pair_gen)
-            words_list = noun+', '+verb
-            subjunctive_prompt_preamble_3 = f"Generate a sentence that uses the phrase \"{subj_trigger}\" but does not trigger the subjunctive because the statement is habitual or in the past and contains these words or conjugations of these words: {words_list}."
-            deck_and_prompt_tuples.append((f"Subj - {subj_trigger}" , (subjunctive_prompt_preamble_3, words_list)))
-            del noun
-            del verb
-            del words_list
-            # print(subjunctive_prompt_preamble_2)
-            # print(subjunctive_prompt_preamble_3)
-
-        del subj_trigger
-
-        depends_subj_triggers = ["aunque",
-                                #  "aun así","y eso que" #GPT reviewed my code and said these were not a good choice
-                                 ]
-
-        for subj_trigger in depends_subj_triggers:
-            noun, verb = next(pair_gen)
-            words_list = noun+', '+verb
-            subjunctive_prompt_preamble_4 = f"Generate a sentence that uses the phrase \"{subj_trigger}\" but DOES NOT use the subjunctive because of the intention of the speaker and contains these words or conjugations of these words: {words_list}."
-            deck_and_prompt_tuples.append((f"Subj - {subj_trigger}" , (subjunctive_prompt_preamble_4, words_list)))
-            del noun
-            del verb
-            del words_list
+        for i in range(0,k):
+            se_triggers = [#'Reflexive se','Pronominal', # i feel like this should be handled separately
+                        'Reciprocal se', 'Accidental / Unintended se', 'Passive se', 'Impersonal se']
             
+            for se_trigger in se_triggers:
+                noun, verb = next(pair_gen)
+                words_list = noun+', '+verb
+
+                se_prompt_preamble_1 = f"Generate a sentence that uses \"se\" because of {se_trigger} and contains these words or conjugations of these words: {words_list}."
+                deck_and_prompt_tuples.append((f"Se - {se_trigger}" , (se_prompt_preamble_1, words_list)))
+                del noun
+                del verb
+                del words_list
+            del se_trigger
+
+
+            # subjunctive_prompt_preamble_1 = "Generate a sentence that uses the subjunctive trigger phrase ({subj_trigger}) and contains these words or conjugations of these words ({words_list})."
+
+            subj_triggers_1 = ["Volition / Influence","Emotion / Value Judgement","Doubt / Uncertainty",
+                            "Purpose / Condition (Time specifically)","Purpose / Condition (Condition specifically)",
+                            "Non-existent / indefinite antecedent"]
+
+            for subj_trigger in subj_triggers_1:
+                noun, verb = next(pair_gen)
+                words_list = noun+', '+verb
+
+                subjunctive_prompt_preamble_1 = f"Generate a sentence that uses the subjunctive because of {subj_trigger} and contains these words or conjugations of these words: {words_list}."
+                #print(subjunctive_prompt_preamble_1)
+                deck_and_prompt_tuples.append((f"Subj - {subj_trigger}" , (subjunctive_prompt_preamble_1, words_list)))
+                del noun
+                del verb
+                del words_list
+
+            del subj_trigger
+            
+            sometimes_subj_triggers = ["cuando","mientras que","hasta que","después de que","tan pronto como"]
+
+            for subj_trigger in sometimes_subj_triggers:
+                noun, verb = next(pair_gen)
+                words_list = noun+', '+verb
+                subjunctive_prompt_preamble_2 = f"Generate a sentence that uses the subjunctive trigger phrase \"{subj_trigger}\" because the statement is in the future or not realized and contains these words or conjugations of these words: {words_list}."
+                deck_and_prompt_tuples.append((f"Subj - {subj_trigger}" , (subjunctive_prompt_preamble_2, words_list)))
+                del noun
+                del verb
+                del words_list
+
+                noun, verb = next(pair_gen)
+                words_list = noun+', '+verb
+                subjunctive_prompt_preamble_3 = f"Generate a sentence that uses the phrase \"{subj_trigger}\" but does not trigger the subjunctive because the statement is habitual or in the past and contains these words or conjugations of these words: {words_list}."
+                deck_and_prompt_tuples.append((f"Subj - {subj_trigger}" , (subjunctive_prompt_preamble_3, words_list)))
+                del noun
+                del verb
+                del words_list
+                # print(subjunctive_prompt_preamble_2)
+                # print(subjunctive_prompt_preamble_3)
+
+            del subj_trigger
+
+            depends_subj_triggers = ["aunque",
+                                    #  "aun así","y eso que" #GPT reviewed my code and said these were not a good choice
+                                    ]
+
+            for subj_trigger in depends_subj_triggers:
+                noun, verb = next(pair_gen)
+                words_list = noun+', '+verb
+                subjunctive_prompt_preamble_4 = f"Generate a sentence that uses the phrase \"{subj_trigger}\" but DOES NOT use the subjunctive because of the intention of the speaker and contains these words or conjugations of these words: {words_list}."
+                deck_and_prompt_tuples.append((f"Subj - {subj_trigger}" , (subjunctive_prompt_preamble_4, words_list)))
+                del noun
+                del verb
+                del words_list
+                
+                noun, verb = next(pair_gen)
+                words_list = noun+', '+verb
+                subjunctive_prompt_preamble_5 = f"Generate a sentence that uses the phrase \"{subj_trigger}\" and DOES use the subjunctive because of the intention of the speaker and contains these words or conjugations of these words: {words_list}."
+                deck_and_prompt_tuples.append((f"Subj - {subj_trigger}" , (subjunctive_prompt_preamble_5, words_list)))
+                del noun
+                del verb
+                del words_list
+                
+                # print(subjunctive_prompt_preamble_4)
+                # print(subjunctive_prompt_preamble_5)
+
+            del subj_trigger
+
             noun, verb = next(pair_gen)
             words_list = noun+', '+verb
-            subjunctive_prompt_preamble_5 = f"Generate a sentence that uses the phrase \"{subj_trigger}\" and DOES use the subjunctive because of the intention of the speaker and contains these words or conjugations of these words: {words_list}."
-            deck_and_prompt_tuples.append((f"Subj - {subj_trigger}" , (subjunctive_prompt_preamble_5, words_list)))
+            subjunctive_prompt_preamble_6 = f"Generate a sentence that uses the imperfect subjunctive and contains these words or conjugations of these words: {words_list}."
+            deck_and_prompt_tuples.append((f"Subj - Imperfect" , (subjunctive_prompt_preamble_6, words_list)))
             del noun
             del verb
             del words_list
-            
-            # print(subjunctive_prompt_preamble_4)
-            # print(subjunctive_prompt_preamble_5)
 
-        del subj_trigger
-
-        noun, verb = next(pair_gen)
-        words_list = noun+', '+verb
-        subjunctive_prompt_preamble_6 = f"Generate a sentence that uses the imperfect subjunctive and contains these words or conjugations of these words: {words_list}."
-        deck_and_prompt_tuples.append((f"Subj - Imperfect" , (subjunctive_prompt_preamble_6, words_list)))
-        del noun
-        del verb
-        del words_list
-
-        noun, verb = next(pair_gen)
-        words_list = noun+', '+verb
-        subjunctive_prompt_preamble_7 = f"Generate a sentence that uses the pluperfect subjunctive and contains these words or conjugations of these words: {words_list}."
-        deck_and_prompt_tuples.append((f"Subj - Pluperfect" , (subjunctive_prompt_preamble_7, words_list)))
-        del noun
-        del verb
-        del words_list
+            noun, verb = next(pair_gen)
+            words_list = noun+', '+verb
+            subjunctive_prompt_preamble_7 = f"Generate a sentence that uses the pluperfect subjunctive and contains these words or conjugations of these words: {words_list}."
+            deck_and_prompt_tuples.append((f"Subj - Pluperfect" , (subjunctive_prompt_preamble_7, words_list)))
+            del noun
+            del verb
+            del words_list
+        
 
         # print(subjunctive_prompt_preamble_6)
         # print(subjunctive_prompt_preamble_7)
@@ -3091,7 +3093,7 @@ if __name__ == "__main__":
                 noun, verb = next(pair_gen)
                 words_list = noun+', '+verb
                 comp_coord_prompt = f"Generate a sentence that uses \"{phrase}\" in the \"{comp_coord_cat}\" sense and contains these words or conjugations of these words: {words_list}."
-                deck_and_prompt_tuples.append((f"Comp Coord - {phrase}" , (comp_coord_prompt, words_list)))
+                # deck_and_prompt_tuples.append((f"Comp Coord - {phrase}" , (comp_coord_prompt, words_list)))
                 del noun
                 del verb
                 del words_list
@@ -3107,7 +3109,7 @@ if __name__ == "__main__":
         deck_name_to_card_dict = {}
         for d_p in deck_and_prompt_tuples:
             deck_specific_name = str(d_p[0])
-            deck_full_name = 'Dave LLM Sentences :: '+str(d_p[0])
+            deck_full_name = 'Espanol::Active Learning::Dave LLM Sentences::'+str(d_p[0])
             spanish_sentence_prompt = d_p[1][0]
             words_list = d_p[1][1]
             noun = words_list.split(',')[0].strip()
@@ -3119,6 +3121,7 @@ if __name__ == "__main__":
             else:
                 spanish_sentence = chat(spanish_sentence_prompt)
                 english_sentence = translate_es_to_en(spanish_sentence)
+                # time.sleep(1)
             
             if SHOW_CARDS:
                 print(spanish_sentence)
@@ -3165,7 +3168,7 @@ if __name__ == "__main__":
 
         for por_reason in por_reasons:
             deck_specific_name = f"Por - {por_reason}"
-            deck_full_name = 'Dave LLM Sentences :: '+deck_specific_name
+            deck_full_name = 'Espanol::Active Learning::Dave LLM Sentences::'+deck_specific_name
             if not deck_full_name in deck_name_to_card_dict.keys():
                 deck_name_to_card_dict[deck_full_name] = {}
 
@@ -3177,6 +3180,7 @@ if __name__ == "__main__":
             else:
                 spanish_sentence = chat(cloze_por_prompt)
                 english_sentence = translate_es_to_en(spanish_sentence)
+                # time.sleep(1)
             spanish_sentence = re.sub(r'\b[Pp]or\b', '____', spanish_sentence, count=1)
             
             deck_name_to_card_dict[deck_full_name][spanish_sentence] = {"back": deck_specific_name+" ; "+spanish_sentence,
@@ -3192,7 +3196,7 @@ if __name__ == "__main__":
 
         for para_reason in para_reasons:
             deck_specific_name = f"Para - {para_reason}"
-            deck_full_name = 'Dave LLM Sentences :: '+deck_specific_name
+            deck_full_name = 'Espanol::Active Learning::Dave LLM Sentences::'+deck_specific_name
             if not deck_full_name in deck_name_to_card_dict.keys():
                 deck_name_to_card_dict[deck_full_name] = {}
 
@@ -3205,6 +3209,7 @@ if __name__ == "__main__":
             else:
                 spanish_sentence = chat(cloze_para_prompt)
                 english_sentence = translate_es_to_en(spanish_sentence)
+                # time.sleep(1)
             spanish_sentence = re.sub(r'\b[Pp]ara\b', '____', spanish_sentence, count=1)
 
             
@@ -3262,10 +3267,11 @@ if __name__ == "__main__":
         
         deck_list = []
         counter = 0
+        print(f'length deck_and_prompt_tuples:')
         for k, v in deck_name_to_card_dict.items():
             # print(k)
             # print(counter)
-            counter += 1
+            counter += len(v)
             deck_list.append(build_anki_deck(k,v))
 
         print('Num Cards Created: '+str(counter))
@@ -3332,7 +3338,7 @@ if __name__ == "__main__":
             print(spanish_sentence)
             print(tuples)
             print('-----------------------------------------------------------------------')
-            time.sleep(1)
+            # time.sleep(1)
 
             # todo 
             # e.g. append_tag(out["note_id"], "auto-lemma-verb:VERB") 
@@ -3514,8 +3520,6 @@ if __name__ == "__main__":
         else:
             pkg.write_to_file('IRL_deck.apkg')
             print('Wrote IRL_deck.apkg')
-        
-
     elif action == 'inspect revlog':
         con = get_anki_connection(DB_PATH)
         df = get_revlog_df(con)
@@ -3586,7 +3590,6 @@ if __name__ == "__main__":
 
         print('Right first time card ids:')
         print(fast_and_correct_first[["card_id", "deck_name"]].to_string())
-
     elif action == 'convert 2 sided cards to 1 sided cards':
         pass
 
