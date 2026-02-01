@@ -30,6 +30,23 @@ from collections import Counter, defaultdict
 from typing import Any, Dict, Iterable, Optional, Set, Tuple, List
 import unicodedata
 
+import numpy as np
+
+from dataclasses import dataclass
+from typing import Iterable, List, Optional
+
+import spacy
+import nltk
+from nltk.corpus import wordnet as wn
+
+import requests
+from typing import Any, Dict, List
+from typing import Iterator, Tuple
+
+from wordfreq import top_n_list, zipf_frequency
+
+from collections import defaultdict
+
 
 
 Lang = Literal["es", "en", "amb"]
@@ -48,25 +65,17 @@ ENGLISH_FUNCTION_WORDS = {
     "is","are","was","were","be","been","it","this","these","those","not","yes","no",
 }
 
-
-from dataclasses import dataclass
-from typing import Iterable, List, Optional
-
-import spacy
-import nltk
-from nltk.corpus import wordnet as wn
-
-
 EPOCH = date(1970, 1, 1)
 
 BASE_URL = "https://ai.dpc.casa/v1"   # or "http://ai.dpc.casa:8000/v1"
 MODEL = "gemma3"                      # whatever name he gave the model
 API_KEY = ""                          # fill if he set one, else leave ""
 
-import requests
-from typing import Any, Dict, List
-
 ANKI_CONNECT_URL = "http://127.0.0.1:8765"
+
+
+FSRS_API = "http://127.0.0.1:8787/fsrs"
+MATURE_IVL_DAYS_DEFAULT = 21  # tune if you want (Anki “mature” is commonly 21d+)
 
 @lru_cache(maxsize=200_000)
 def omw_has_spanish_lemma(word: str) -> bool:
@@ -111,7 +120,6 @@ def top_n_lemmas_with_pos(n: int, nlp):
 
     return out
 
-FSRS_API = "http://127.0.0.1:8787/fsrs"
 
 def fetch_fsrs(cids: Iterable[int]) -> list[dict]:
     # batch in chunks so URLs don't get huge
@@ -289,9 +297,6 @@ def anki(action: str, **params) -> Any:
     if data.get("error"):
         raise RuntimeError(data["error"])
     return data["result"]
-
-# def load_decks(cur) -> Dict[int, str]:
-#     return {int(did): name for did, name in cur.execute("SELECT id, name FROM decks")}
 
 def load_decks(cur):
     # Deck names use \x1f as hierarchy separator in your DB; convert to Anki-style "::"
@@ -538,20 +543,6 @@ def get_revlog_df(con: sqlite3.Connection) -> pd.DataFrame:
 
     return df
 
-# def join_revlog_cards(con: sqlite3.Connection) -> pd.DataFrame:
-#     cards = get_cards_notes_df(con)
-#     rev = get_revlog_df(con)
-
-#     df = rev.merge(cards, on="card_id", how="left", validate="many_to_one")
-
-#     # ease mapping:
-#     # 1=Again, 2=Hard, 3=Good, 4=Easy
-#     ease_map = {1: "again", 2: "hard", 3: "good", 4: "easy"}
-#     df["button"] = df["ease"].map(ease_map).fillna("unknown")
-
-#     return df
-
-
 def getAnkiCards():
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
@@ -760,50 +751,6 @@ def getAnkiSentenceCards():
     # print(card_data_df)
     return card_data_df
 
-
-# def main():
-#     con = sqlite3.connect(DB_PATH)
-#     con.row_factory = sqlite3.Row
-#     cur = con.cursor()
-
-#     decks = load_decks(cur)
-#     fieldmap = load_fieldmap_from_fields_table(cur)
-#     col_crt = cur.execute("SELECT crt FROM col").fetchone()[0]
-
-#     rows = cur.execute("""
-#         SELECT
-#             c.id AS card_id,
-#             c.nid,
-#             c.did,
-#             c.queue,
-#             c.due,
-#             c.ivl,
-#             n.flds,
-#             n.tags,
-#             n.mid
-#         FROM cards c
-#         JOIN notes n ON n.id = c.nid
-#         ORDER BY c.did, c.id
-#         LIMIT 20
-#     """).fetchall()
-
-#     for r in rows:
-#         mid = int(r["mid"])
-#         fieldnames = fieldmap.get(mid, [])
-#         front, back = pick_front_back_from_fieldmap(r["flds"], fieldnames) if fieldnames else ("", "")
-
-#         out = {
-#             "deck": decks.get(int(r["did"]), f"Unknown(did={r['did']})"),
-#             "front": front,
-#             "back": back,
-#             "status": classify(int(r["queue"]), int(r["ivl"] or 0)),
-#             "due": due_display(int(r["queue"]), int(r["due"]), col_crt),
-#             "tags": (r["tags"] or "").strip().split(),
-#         }
-#         print(out)
-
-#     con.close()
-
 def append_tag(note_id: int, tag: str) -> None:
     """
     Append a tag to a note if it doesn't already have it.
@@ -827,6 +774,45 @@ def translate_es_to_en(prompt: str) -> str:
                 "Respond with exactly ONE complete English sentence. "
                 "Do NOT include explanations, translations, punctuation outside the sentence, "
                 "or any text in any language other than English."
+            )
+            # You are a Spanish-to-English sentence translator for language-learning flashcards.
+            # Goal: Produce an English sentence that preserves the Spanish sentence’s grammatical structure and information order as closely as possible (clause order, fronted phrases, conditionals, passive/impersonal “se”, etc.), while remaining grammatical English.
+            # Rules:
+            # - Output EXACTLY ONE complete English sentence.
+            # - Do NOT add explanations or any extra text.
+            # - Keep the same clause order as the Spanish whenever possible (e.g., if the Spanish starts with a conditional phrase like “A condición de que…”, the English should also start with an equivalent conditional phrase).
+            # - Preserve voice: if Spanish uses passive/impersonal (“se + verb”), prefer passive/impersonal English (“is/are …”, “one/they …”) rather than switching to an active paraphrase, unless impossible.
+            # - Prefer literal/structural faithfulness over stylistic naturalness.
+            # - Keep meaning intact; do not omit details.
+
+        },
+        {"role": "user", "content": prompt}
+    ]
+    }
+
+    r = requests.post(url, headers=headers, json=payload, timeout=60)
+    r.raise_for_status()
+    data = r.json()
+
+    # Standard OpenAI-style response shape
+    return data["choices"][0]["message"]["content"]
+
+def translate_en_word_to_es_word(prompt: str) -> str:
+    url = f"{BASE_URL}/chat/completions"
+    headers = {"Content-Type": "application/json"}
+    if API_KEY:
+        headers["Authorization"] = f"Bearer {API_KEY}"
+
+    payload = {
+        "model": MODEL,
+        "messages": [
+        {
+            "role": "system",
+            "content": (
+                "You are a English-to-Spanish sentence translator. "
+                "Respond with the best, most concise Spanish word analog. "
+                "Do NOT include explanations, translations, punctuation outside the sentence, "
+                "or any text in any language other than Spanish."
             )
             # You are a Spanish-to-English sentence translator for language-learning flashcards.
             # Goal: Produce an English sentence that preserves the Spanish sentence’s grammatical structure and information order as closely as possible (clause order, fronted phrases, conditionals, passive/impersonal “se”, etc.), while remaining grammatical English.
@@ -1023,51 +1009,7 @@ def build_anki_deck(deck_name, deck_dict):
     return my_deck
     # genanki.Package(my_deck).write_to_file(deck_file_name + ".apkg")
 
-import numpy as np
-import pandas as pd
 
-# class SeedPicker:
-#     def __init__(self, usage_stats: pd.DataFrame, pos: str, rng_seed: int = 0):
-#         print(usage_stats)
-#         self.df = usage_stats[usage_stats["part_of_speech"] == pos].copy()
-#         self.rng = np.random.default_rng(rng_seed)
-
-#         # Ensure missing columns exist
-#         for col in ["new_count", "young_count", "mature_count", "total_count"]:
-#             if col not in self.df.columns:
-#                 self.df[col] = 0
-
-#     def _score(self, row) -> float:
-#         # Tune these weights to match your pain (new/young drives workload)
-#         return (
-#             row["total_count"]
-#             + 3.0 * row["new_count"]
-#             + 2.0 * row["young_count"]
-#             + 0.5 * row["mature_count"]
-#         )
-
-#     def next(self) -> str:
-#         # Compute scores
-#         scores = self.df.apply(self._score, axis=1).to_numpy()
-
-#         # Pick from the best K to keep variety
-#         K = min(50, len(self.df))
-#         best_idx = np.argpartition(scores, K - 1)[:K]
-
-#         # Convert score -> sampling weight (lower score => higher weight)
-#         # Add epsilon to avoid division by 0.
-#         eps = 1e-6
-#         w = 1.0 / (scores[best_idx] + eps)
-#         w = w / w.sum()
-
-#         chosen_local = self.rng.choice(best_idx, p=w)
-#         word = self.df.iloc[chosen_local]["word"]
-
-#         # Optimistically account for the card you’re about to create
-#         self.df.iloc[chosen_local, self.df.columns.get_loc("new_count")] += 1
-#         self.df.iloc[chosen_local, self.df.columns.get_loc("total_count")] += 1
-
-#         return word
 
 def _num(x, default=0.0):
     """Convert possible pd.NA / NaN to a real float."""
@@ -1232,7 +1174,7 @@ class SeedPicker:
 
         return word
 
-from typing import Iterator, Tuple
+
 def make_generators(noun_usage_stats: pd.DataFrame,
                     verb_usage_stats: pd.DataFrame,
                     rng_seed: int = 42) -> Iterator[Tuple[str, str]]:
@@ -1252,7 +1194,6 @@ def make_generators(noun_usage_stats: pd.DataFrame,
     while True:
         yield noun_picker.next(), verb_picker.next()
 
-MATURE_IVL_DAYS_DEFAULT = 21  # tune if you want (Anki “mature” is commonly 21d+)
 
 def extractSeedStatistics(
     cards_df: pd.DataFrame,
@@ -1525,7 +1466,6 @@ def add_hardcoded_seeds(usage_stats: pd.DataFrame, extra_words: list[str]) -> pd
 
     return out
 
-MATURE_IVL_DAYS_DEFAULT = 21  # tweak if you want
 
 def extractObjectiveStatistics(
     cards_df: pd.DataFrame,
@@ -1713,8 +1653,6 @@ def extractObjectiveStatistics(
 
     return out
 
-from wordfreq import top_n_list, zipf_frequency
-
 KEEP_POS = {"NOUN", "VERB", "ADJ", "ADV"}  # tweak
 
 def build_universe(nlp, *, top_k=50_000, min_zipf=4.0):
@@ -1750,8 +1688,6 @@ def build_universe(nlp, *, top_k=50_000, min_zipf=4.0):
             universe[key] = {"lemma": lemma, "pos": pos, "zipf": z, "example_surface": w}
 
     return list(universe.values())
-
-from collections import defaultdict
 
 def build_known_set_from_retrievability(card_key_map, fsrs_df, threshold=0.9, agg="max"):
     """
@@ -1820,10 +1756,6 @@ def print_zipf_rows(rows, *, min_total: int = 1):
         if total < min_total:
             continue
         print(f"{bucket:>10}  total={total:5d}  known={known:5d}  coverage={pct:6.2f}%")
-
-
-# from collections import Counter, defaultdict
-# from typing import Any, Dict, Iterable, Optional, Set, Tuple
 
 def coverage_report(
     universe_rows: Iterable[Dict[str, Any]],
@@ -2023,9 +1955,10 @@ if __name__ == "__main__":
     print('Start.')
 
     # action = 'generate cards'
-    action = 'measure fluency'
+    # action = 'measure fluency'
     # action = 'inspect revlog'
     # action = 'convert 2 sided cards to 1 sided cards'
+    action = 'generate topic cards'
     
     DB_PATH = "/tmp/collection_ro.anki2"
 
@@ -3592,5 +3525,2135 @@ if __name__ == "__main__":
         print(fast_and_correct_first[["card_id", "deck_name"]].to_string())
     elif action == 'convert 2 sided cards to 1 sided cards':
         pass
+    elif action == 'generate topic cards':
+        pass
+        # Common Converstion Topics When Meeting New People
+        # https://www.fluentu.com/blog/learn/language-exchange-topics/
+
+        positive_traits_words = ['Accessible','Active','Adaptable','Admirable','Adventurous','Agreeable','Alert','Amiable','Anticipative','Articulate','Athletic','Balanced','Benevolent','Brilliant','Calm','Capable','Captivating','Caring','Challenging','Charismatic','Charming','Cheerful','Clean','Clear-headed','Clever','Colorful','Compassionate','Conciliatory','Confident','Conscientious','Considerate','Constant','Contemplative','Cooperative','Courageous','Courteous','Creative','Cultured','Curious','Daring','Debonair','Decent','Decisive','Dedicated','Deep','Dignified','Directed','Disciplined','Discreet','Dramatic','Dutiful','Dynamic','Earnest','Ebullient','Educated','Efficient','Elegant','Eloquent','Empathetic','Energetic','Enthusiastic','Esthetic','Exciting','Extraordinary','Fair','Faithful','Farsighted','Felicific','Firm','Flexible','Focused','Forceful','Forgiving','Forthright','Freethinking','Friendly','Fun-loving','Gallant','Generous','Gentle','Genuine','Good-natured','Gracious','Hardworking','Healthy','Hearty','Helpful','Heroic','High-minded','Honest','Honorable','Humble','Humorous','Idealistic','Imaginative','Impressive','Incisive','Incorruptible','Independent','Individualistic','Innovative','Inoffensive','Insightful','Insouciant','Intelligent','Intuitive','Invulnerable','Kind','Knowledge','Leaderly','Leisurely','Liberal','Logical','Lovable','Loyal','Lyrical','Magnanimous','Many-sided','Manly','Mature','Methodical','Maticulous','Moderate','Modest','Multi-leveled','Neat','Nonauthoritarian','Objective','Observant','Open','Optimistic','Orderly','Organized','Original','Painstaking','Passionate','Patient','Patriotic','Peaceful','Perceptive','Perfectionist','Personable','Persuasive','Planful','Playful','Polished','Popular','Practical','Precise','Principled','Profound','Protean','Protective','Providential','Prudent','Punctual','Purposeful','Rational','Realistic','Reflective','Relaxed','Reliable','Resourceful','Respectful','Responsible','Responsive','Reverential','Romantic','Rustic','Sage','Sane','Scholarly','Scrupulous','Secure','Selfless','Self-critical','Self-defacing','Self-denying','Self-reliant','Self-sufficent','Sensitive','Sentimental','Seraphic','Serious','Sexy','Sharing','Shrewd','Simple','Skillful','Sober','Sociable','Solid','Sophisticated','Spontaneous','Sporting','Stable','Steadfast','Steady','Stoic','Strong','Studious','Suave','Subtle','Sweet','Sympathetic','Systematic','Tasteful','Teacherly','Thorough','Tidy','Tolerant','Tractable','Trusting','Uncomplaining','Understanding','Undogmatic','Unfoolable','Upright','Urbane','Venturesome','Vivacious','Warm','Well-bred','Well-read','Well-rounded','Winning','Wise','Witty','Youthful']
+
+        neutral_traits_text = """
+        1. Absentminded
+        2. Aggressive
+        3. Ambitious
+        4. Amusing
+        5. Artful
+        6. Ascetic
+        7. Authoritarian
+        8. Big-thinking
+        9. Boyish
+        10. Breezy
+        11. Businesslike
+        12. Busy
+        13. Casual
+        14. Crebral
+        15. Chummy
+        16. Circumspect
+        17. Competitive
+        18. Complex
+        19. Confidential
+        20. Conservative
+        21. Contradictory
+        22. Crisp
+        23. Cute
+        24. Deceptive
+        25. Determined
+        26. Dominating
+        27. Dreamy
+        28. Driving
+        29. Droll
+        30. Dry
+        31. Earthy
+        32. Effeminate
+        33. Emotional
+        34. Enigmatic
+        35. Experimental
+        36. Familial
+        37. Folksy
+        38. Formal
+        39. Freewheeling
+        40. Frugal
+        41. Glamorous
+        42. Guileless
+        43. High-spirited
+        44. Huried
+        45. Hypnotic
+        46. Iconoclastic
+        47. Idiosyncratic
+        48. Impassive
+        49. Impersonal
+        50. Impressionable
+        51. Intense
+        52. Invisible
+        53. Irreligious
+        54. Irreverent
+        55. Maternal
+        56. Mellow
+        57. Modern
+        58. Moralistic
+        59. Mystical
+        60. Neutral
+        61. Noncommittal
+        62. Noncompetitive
+        63. Obedient
+        64. Old-fashined
+        65. Ordinary
+        66. Outspoken
+        67. Paternalistic
+        68. Physical
+        69. Placid
+        70. Political
+        71. Predictable
+        72. Preoccupied
+        73. Private
+        74. Progressive
+        75. Proud
+        76. Pure
+        77. Questioning
+        78. Quiet
+        79. Religious
+        80. Reserved
+        81. Restrained
+        82. Retiring
+        83. Sarcastic
+        84. Self-conscious
+        85. Sensual
+        86. Skeptical
+        87. Smooth
+        88. Soft
+        89. Solemn
+        90. Solitary
+        91. Stern
+        92. Stoiid
+        93. Strict
+        94. Stubborn
+        95. Stylish
+        96. Subjective
+        97. Surprising
+        98. Soft
+        99. Tough
+        100. Unaggressive
+        101. Unambitious
+        102. Unceremonious
+        103. Unchanging
+        104. Undemanding
+        105. Unfathomable
+        106. Unhurried
+        107. Uninhibited
+        108. Unpatriotic
+        109. Unpredicatable
+        110. Unreligious
+        111. Unsentimental
+        112. Whimsical
+        """
+        neutral_traits_cleaned = re.sub('[0-9\.\\n]', '', neutral_traits_text)
+        neutral_traits_words = set(neutral_traits_cleaned.split(' '))
+        # print(neutral_traits) #note still has ''
+
+        negative_traits_text = """
+            Abrasive
+            Abrupt
+            Agonizing
+            Aimless
+            Airy
+            Aloof
+            Amoral
+            Angry
+            Anxious
+            Apathetic
+            Arbitrary
+            Argumentative
+            Arrogantt
+            Artificial
+            Asocial
+            Assertive
+            Astigmatic
+            Barbaric
+            Bewildered
+            Bizarre
+            Bland
+            Blunt
+            Biosterous
+            Brittle
+            Brutal
+            Calculating
+            Callous
+            Cantakerous
+            Careless
+            Cautious
+            Charmless
+            Childish
+            Clumsy
+            Coarse
+            Cold
+            Colorless
+            Complacent
+            Complaintive
+            Compulsive
+            Conceited
+            Condemnatory
+            Conformist
+            Confused
+            Contemptible
+            Conventional
+            Cowardly
+            Crafty
+            Crass
+            Crazy
+            Criminal
+            Critical
+            Crude
+            Cruel
+            Cynical
+            Decadent
+            Deceitful
+            Delicate
+            Demanding
+            Dependent
+            Desperate
+            Destructive
+            Devious
+            Difficult
+            Dirty
+            Disconcerting
+            Discontented
+            Discouraging
+            Discourteous
+            Dishonest
+            Disloyal
+            Disobedient
+            Disorderly
+            Disorganized
+            Disputatious
+            Disrespectful
+            Disruptive
+            Dissolute
+            Dissonant
+            Distractible
+            Disturbing
+            Dogmatic
+            Domineering
+            Dull
+            Easily Discouraged
+            Egocentric
+            Enervated
+            Envious
+            Erratic
+            Escapist
+            Excitable
+            Expedient
+            Extravagant
+            Extreme
+            Faithless
+            False
+            Fanatical
+            Fanciful
+            Fatalistic
+            Fawning
+            Fearful
+            Fickle
+            Fiery
+            Fixed
+            Flamboyant
+            Foolish
+            Forgetful
+            Fraudulent
+            Frightening
+            Frivolous
+            Gloomy
+            Graceless
+            Grand
+            Greedy
+            Grim
+            Gullible
+            Hateful
+            Haughty
+            Hedonistic
+            Hesitant
+            Hidebound
+            High-handed
+            Hostile
+            Ignorant
+            Imitative
+            Impatient
+            Impractical
+            Imprudent
+            Impulsive
+            Inconsiderate
+            Incurious
+            Indecisive
+            Indulgent
+            Inert
+            Inhibited
+            Insecure
+            Insensitive
+            Insincere
+            Insulting
+            Intolerant
+            Irascible
+            Irrational
+            Irresponsible
+            Irritable
+            Lazy
+            Libidinous
+            Loquacious
+            Malicious
+            Mannered
+            Mannerless
+            Mawkish
+            Mealymouthed
+            Mechanical
+            Meddlesome
+            Melancholic
+            Meretricious
+            Messy
+            Miserable
+            Miserly
+            Misguided
+            Mistaken
+            Money-minded
+            Monstrous
+            Moody
+            Morbid
+            Muddle-headed
+            Naive
+            Narcissistic
+            Narrow
+            Narrow-minded
+            Natty
+            Negativistic
+            Neglectful
+            Neurotic
+            Nihilistic
+            Obnoxious
+            Obsessive
+            Obvious
+            Odd
+            Offhand
+            One-dimensional
+            One-sided
+            Opinionated
+            Opportunistic
+            Oppressed
+            Outrageous
+            Overimaginative
+            Paranoid
+            Passive
+            Pedantic
+            Perverse
+            Petty
+            Pharissical
+            Phlegmatic
+            Plodding
+            Pompous
+            Possessive
+            Power-hungry
+            Predatory
+            Prejudiced
+            Presumptuous
+            Pretentious
+            Prim
+            Procrastinating
+            Profligate
+            Provocative
+            Pugnacious
+            Puritanical
+            Quirky
+            Reactionary
+            Reactive
+            Regimental
+            Regretful
+            Repentant
+            Repressed
+            Resentful
+            Ridiculous
+            Rigid
+            Ritualistic
+            Rowdy
+            Ruined
+            Sadistic
+            Sanctimonious
+            Scheming
+            Scornful
+            Secretive
+            Sedentary
+            Selfish
+            Self-indulgent
+            Shallow
+            Shortsighted
+            Shy
+            Silly
+            Single-minded
+            Sloppy
+            Slow
+            Sly
+            Small-thinking
+            Softheaded
+            Sordid
+            Steely
+            Stiff
+            Strong-willed
+            Stupid
+            Submissive
+            Superficial
+            Superstitious
+            Suspicious
+            Tactless
+            Tasteless
+            Tense
+            Thievish
+            Thoughtless
+            Timid
+            Transparent
+            Treacherous
+            Trendy
+            Troublesome
+            Unappreciative
+            Uncaring
+            Uncharitable
+            Unconvincing
+            Uncooperative
+            Uncreative
+            Uncritical
+            Unctuous
+            Undisciplined
+            Unfriendly
+            Ungrateful
+            Unhealthy
+            Unimaginative
+            Unimpressive
+            Unlovable
+            Unpolished
+            Unprincipled
+            Unrealistic
+            Unreflective
+            Unreliable
+            Unrestrained
+            Unself-critical
+            Unstable
+            Vacuous
+            Vague
+            Venal
+            Venomous
+            Vindictive
+            Vulnerable
+            Weak
+            Weak-willed
+            Well-meaning
+            Willful
+            Wishful
+            Zany
+
+        """
+        negative_traits_cleaned = re.sub('\n', '', negative_traits_text)
+        negative_traits_words = set(negative_traits_cleaned.split(' '))
+        # print(negative_traits) #note still has ''
+
+        feelings_text = """
+        Accepting
+        Open
+        Calm
+        Centered
+        Content
+        Fulfilled
+        Patient
+        Peaceful
+        Present
+        Relaxed
+        Serene
+        Trusting
+        Aliveness
+        Joy
+        Amazed
+        Awe
+        Bliss
+        Delighted
+        Eager
+        Ecstatic
+        Enchanted
+        Energized
+        Engaged
+        Enthusiastic
+        Excited
+        Free
+        Happy
+        Inspired
+        Invigorated
+        Lively
+        Passionate
+        Playful
+        Radiant
+        Refreshed
+        Rejuvenated
+        Renewed
+        Satisfied
+        Thrilled
+        Vibrant
+        Angry
+        Annoyed
+        Agitated
+        Aggravated
+        Bitter
+        Contempt
+        Cynical
+        Disdain
+        Disgruntled
+        Disturbed
+        Edgy
+        Exasperated
+        Frustrated
+        Furious
+        Grouchy
+        Hostile
+        Impatient
+        Irritated
+        Irate
+        Moody
+        On edge
+        Outraged
+        Pissed
+        Resentful
+        Upset
+        Vindictive
+        Courageous
+        Powerful
+        Adventurous
+        Brave
+        Capable
+        Confident
+        Daring
+        Determined
+        Free
+        Grounded
+        Proud
+        Strong
+        Worthy
+        Valiant
+        Connected
+        Loving
+        Accepting
+        Affectionate
+        Caring
+        Compassion
+        Empathy
+        Fulfilled
+        Present
+        Safe
+        Warm
+        Worthy
+        Curious
+        Engaged
+        Exploring
+        Fascinated
+        Interested
+        Intrigued
+        Involved
+        Stimulated
+        Despair
+        Sad
+        Anguish
+        Depressed
+        Despondent
+        Disappointed
+        Discouraged
+        Forlorn
+        Gloomy
+        Grief
+        Heartbroken
+        Hopeless
+        Lonely
+        Longing
+        Melancholy
+        Sorrow
+        Teary
+        Unhappy
+        Upset
+        Weary
+        Yearning
+        Disconnected
+        Numb
+        Aloof
+        Bored
+        Confused
+        Distant
+        Empty
+        Indifferent
+        Isolated
+        Lethargic
+        Listless
+        Removed
+        Resistant
+        Shut Down
+        Uneasy
+        Withdrawn
+        Embarrassed
+        Shame
+        Ashamed
+        Humiliated
+        Inhibited
+        Mortified
+        Self-conscious
+        Useless
+        Weak
+        Worthless
+        Fear
+        Afraid
+        Anxious
+        Apprehensive
+        Frightened
+        Hesitant
+        Nervous
+        Panic
+        Paralyzed
+        Scared
+        Terrified
+        Worried
+        Fragile
+        Helpless
+        Sensitive
+        Grateful
+        Appreciative
+        Blessed
+        Delighted
+        Fortunate
+        Grace
+        Humbled
+        Lucky
+        Moved
+        Thankful
+        Touched
+        Guilt
+        Regret
+        Remorseful
+        Sorry
+        Hopeful
+        Encouraged
+        Expectant
+        Optimistic
+        Trusting
+        Powerless
+        Impotent
+        Incapable
+        Resigned
+        Trapped
+        Victim
+        Tender
+        Calm
+        Caring
+        Loving
+        Reflective
+        Self-loving
+        Serene
+        Vulnerable
+        Warm
+        Stressed
+        Tense
+        Anxious
+        Burned out
+        Cranky
+        Depleted
+        Edgy
+        Exhausted
+        Frazzled
+        Overwhelm
+        Rattled
+        Rejecting
+        Restless
+        Shaken
+        Tight
+        Weary
+        Worn out
+        Unsettled
+        Doubt
+        Apprehensive
+        Concerned
+        Dissatisfied
+        Disturbed
+        Grouchy
+        Hesitant
+        Inhibited
+        Perplexed
+        Questioning
+        Rejecting
+        Reluctant
+        Shocked
+        Skeptical
+        Suspicious
+        Ungrounded
+        Unsure
+        Worried
+        """
+
+        feelings_text_cleaned = re.sub('\n', '', feelings_text)
+        feelings_words = set(feelings_text_cleaned.split(' '))
+
+        body_sensations_text = """
+        Achy
+        Airy
+        Blocked
+        Breathless
+        Bruised
+        Burning
+        Buzzy
+        Clammy
+        Clenched
+        Cold
+        Constricted
+        Contained
+        Contracted
+        Dizzy
+        Drained
+        Dull
+        Electric
+        Empty
+        Expanded
+        Flowing
+        Fluid
+        Fluttery
+        Frozen
+        Full
+        Gentle
+        Hard
+        Heavy
+        Hollow
+        Hot
+        Icy
+        Itchy
+        Jumpy
+        Knotted
+        Light
+        Loose
+        Nauseous
+        Numb
+        Pain
+        Pounding
+        Prickly
+        Pulsing
+        Queasy
+        Radiating
+        Relaxed
+        Releasing
+        Rigid
+        Sensitive
+        Settled
+        Shaky
+        Shivery
+        Slow
+        Smooth
+        Soft
+        Sore
+        Spacey
+        Spacious
+        Sparkly
+        Stiff
+        Still
+        Suffocated
+        Sweaty
+        Tender
+        Tense
+        Throbbing
+        Tight
+        Tingling
+        Trembly
+        Twitchy
+        Vibrating
+        Warm
+        Wobbly
+        Wooden
+        """
+
+        body_sensations_cleaned = re.sub('\n', '', body_sensations_text)
+        body_sensations_words = set(body_sensations_cleaned.split(' '))
+
+        tool_words_text = """
+        adze
+        Allen wrench
+        anvil
+        axe
+        B
+        bellows
+        bevel
+        block and tackle
+        block plane
+        bolt
+        bolt cutter
+        brad
+        brush
+        C
+        calipers
+        carpenter
+        chalk line
+        chisel
+        circular saw
+        clamp
+        clippers
+        coping saw
+        countersink
+        crowbar
+        cutters
+        D
+        drill
+        drill bit
+        drill press
+        E
+        edger
+        electric drill
+        engraving tool
+        extension cord
+        F
+        fastener
+        file
+        flange spreader
+        fret saw
+        G
+        glass cutter
+        glue
+        glue gun
+        grinder
+        H
+        hacksaw
+        hammer
+        handsaw
+        hex wrench
+        hoe
+        hone
+        I
+        impact driver
+        infrared thermometer
+        insulation knife
+        J
+        jackhammer
+        jeweler’s pliers
+        jig
+        jigsaw
+        K
+        keyhole saw
+        knee pads (protective tool)
+        knife
+        L
+        ladder
+        lathe
+        level
+        lever
+        M
+        machete
+        mallet
+        measuring tape
+        miter box
+        monkey wrench
+        N
+        nail
+        nail set
+        needle-nose pliers
+        nut
+        O
+        offset screwdriver
+        oiler
+        oscillating multi-tool
+        P
+        Phillips screwdriver
+        pickaxe
+        pin
+        pincer
+        pinch
+        pitchfork
+        plane
+        pliers
+        plow
+        plumb bob
+        poker
+        pruning shears
+        pry bar
+        pulley
+        putty knife
+        Q
+        quick-grip clamp
+        quick-release wrench
+        R
+        rasp
+        ratchet
+        razor
+        reamer
+        rivet
+        roller
+        rope
+        router
+        ruler
+        S
+        safety glasses
+        sand paper
+        sander
+        saw
+        sawhorse
+        scalpel
+        scissors
+        scraper
+        screw
+        screwdriver
+        scythe
+        sharpener
+        shovel
+        sickle
+        snips
+        spade
+        spear
+        sponge
+        square
+        squeegee
+        staple
+        stapler
+        T
+        tack
+        tiller
+        tongs
+        toolbox
+        toolmaker
+        torch
+        trowel
+        U
+        ultrasonic cleaner
+        utility knife
+        V
+        vise
+        voltage tester
+        W
+        wedge
+        wheel
+        woodworker
+        workbench
+        wrench
+        X
+        x-acto knife
+        Y
+        yardstick
+
+        """
+
+        tool_words_cleaned = re.sub('\n', '', tool_words_text)
+        tool_words = set(tool_words_cleaned.split(' '))
+        tool_words = [tw for tw in tool_words if len(tw) > 1]
+
+        clothes_words_text = """
+        abaya
+        anorak
+        apparel
+        apron
+        ascot tie
+        attire
+        B
+        balaclava
+        ball gown
+        bandanna
+        baseball cap
+        bathing suit
+        battledress
+        beanie
+        bedclothes
+        bell-bottoms
+        belt
+        beret
+        Bermuda shorts
+        bib
+        bikini
+        blazer
+        bloomers
+        blouse
+        boa
+        bonnet
+        boot
+        bow
+        bow tie
+        boxer shorts
+        boxers
+        bra
+        bracelet
+        brassiere
+        breeches
+        briefs
+        buckle
+        button
+        button-down shirt
+        C
+        caftan
+        camisole
+        camouflage
+        cap
+        cap and gown
+        cape
+        capris
+        cardigan
+        chemise
+        cloak
+        clogs
+        clothes
+        clothing
+        coat
+        collar
+        corset
+        costume
+        coveralls
+        cowboy boots
+        cowboy hat
+        cravat
+        crown
+        cuff
+        cuff links
+        culottes
+        cummerbund
+        D
+        dashiki
+        diaper
+        dinner jacket
+        dirndl
+        drawers
+        dress
+        dress shirt
+        duds
+        dungarees
+        E
+        earmuffs
+        earrings
+        elastic
+        evening gown
+        F
+        fashion
+        fatigues
+        fedora
+        fez
+        flak jacket
+        flannel nightgown
+        flannel shirt
+        flip-flops
+        formal wear
+        frock
+        fur
+        fur coat
+        G
+        gabardine
+        gaiters
+        galoshes
+        garb
+        garment
+        garters
+        gear
+        getup
+        gilet
+        girdle
+        glasses
+        gloves
+        gown
+        H
+        halter top
+        handbag
+        handkerchief
+        hat
+        Hawaiian shirt
+        hazmat suit
+        headscarf
+        helmet
+        hem
+        high heels
+        hoodie
+        hook and eye
+        hose
+        hosiery
+        hospital gown
+        houndstooth
+        housecoat
+        I
+        infinity scarf
+        innerwear
+        insulated jacket
+        J
+        jacket
+        jeans
+        jersey
+        jewelry
+        jodhpurs
+        jumper
+        jumpsuit
+        K
+        kerchief
+        khakis
+        kilt
+        kimono
+        kit
+        knickers
+        L
+        lab coat
+        lapel
+        leather jacket
+        leg warmers
+        leggings
+        leotard
+        life jacket
+        lingerie
+        loafers
+        loincloth
+        long johns
+        long underwear
+        M
+        miniskirt
+        mittens
+        moccasins
+        muffler
+        muumuu
+        N
+        neckerchief
+        necklace
+        nightgown
+        nightshirt
+        O
+        onesies
+        outerwear
+        outfit
+        overalls
+        overcoat
+        overshirt
+        P
+        pajamas
+        panama hat
+        pants
+        pantsuit
+        pantyhose
+        parka
+        pea coat
+        peplum
+        petticoat
+        pinafore
+        pleat
+        pocket
+        pocketbook
+        polo shirt
+        poncho
+        poodle skirt
+        pork pie hat
+        pullover
+        pumps
+        purse
+        Q
+        quilted jacket
+        R
+        raincoat
+        ring
+        robe
+        rugby shirt
+        S
+        sandals
+        sari
+        sarong
+        scarf
+        school uniform
+        scrubs
+        shawl
+        sheath dress
+        shift
+        shirt
+        shoe
+        shorts
+        shoulder pads
+        shrug
+        singlet
+        skirt
+        slacks
+        slip
+        slippers
+        smock
+        snaps
+        sneakers
+        sock
+        sombrero
+        spacesuit
+        Stetson hat
+        stockings
+        stole
+        suit
+        sun hat
+        sunbonnet
+        sundress
+        sunglasses
+        suspenders
+        sweater
+        sweatpants
+        sweatshirt
+        sweatsuit
+        swimsuit
+        T
+        T-shirt
+        tam
+        tank top
+        teddy
+        threads
+        tiara
+        tie
+        tie clip
+        tights
+        toga
+        togs
+        top
+        top coat
+        top hat
+        train
+        trench coat
+        trousers
+        trunks
+        tube top
+        tunic
+        turban
+        turtleneck
+        turtleneck shirt
+        tutu
+        tux
+        tuxedo
+        tweed jacket
+        twill
+        twin set
+        U
+        umbrella
+        underclothes
+        undershirt
+        underwear
+        uniform
+        V
+        veil
+        Velcro
+        vest
+        vestments
+        visor
+        W
+        waders
+        waistcoat
+        wear
+        wedding gown
+        Wellingtons
+        wetsuit
+        white tie
+        wig
+        windbreaker
+        woolens
+        wrap
+        X
+        x-back dress
+        Y
+        yoga pants
+        yoke
+        Z
+        zip-up hoodie
+        zipper
+        zoot suit
+        zoris
+        """
+
+        clothes_words_cleaned = re.sub('\n', '', clothes_words_text)
+        clothes_words = set(clothes_words_cleaned.split(' '))
+        clothes_words = [cw for cw in clothes_words if len(cw) > 1]
+
+        cooking_tools_text = """
+        apron
+        B
+        baking pan
+        baking sheet
+        barbecue grill
+        baster
+        basting brush
+        blender
+        bread basket
+        bread knife
+        Bundt pan
+        butcher block
+        C
+        cake pan
+        can opener
+        carafe
+        casserole pan
+        charcoal grill
+        cheese cloth
+        coffee maker
+        coffee pot
+        colander
+        convection oven
+        cookbook
+        cookie cutter
+        cookie press
+        cookie sheet
+        cooling rack
+        corer
+        crepe pan
+        crock
+        crock pot
+        cupcake pan
+        custard cup
+        cutlery
+        cutting board
+        D
+        Dutch oven
+        E
+        egg beater
+        egg poacher
+        egg timer
+        espresso machine
+        F
+        fondue pot
+        food processor
+        fork
+        frying pan
+        G
+        garlic press
+        gelatin mold
+        grater
+        griddle
+        grill pan
+        grinder
+        H
+        hamburger press
+        hand mixer
+        honey pot
+        I
+        ice bucket
+        ice cream scoop
+        icing spatula
+        infuser
+        J
+        jar opener
+        jellyroll pan
+        juicer
+        K
+        kettle
+        knife
+        L
+        ladle
+        lasagne pan
+        lid
+        M
+        mandolin
+        measuring cup
+        measuring spoon
+        microwave oven
+        mixing bowl
+        mold
+        mortar and pestle
+        muffin pan
+        N
+        nut cracker
+        O
+        oven
+        oven mitts
+        P
+        pan
+        parchment paper
+        paring knife
+        pastry bag
+        peeler
+        pepper mill
+        percolator
+        pie pan
+        pitcher
+        pizza cutter
+        pizza stone
+        platter
+        poacher
+        popcorn popper
+        pot
+        pot holder
+        poultry shears
+        pressure cooker
+        Q
+        quiche pan
+        R
+        raclette grill
+        ramekin
+        refrigerator
+        rice cooker
+        ricer
+        roaster
+        roasting pan
+        rolling pin
+        S
+        salad bowl
+        salad spinner
+        salt shaker
+        sauce pan
+        scissors
+        sharpening steel
+        shears
+        sieve
+        skewer
+        skillet
+        slicer
+        slow cooker
+        souffle dish
+        spice rack
+        spoon
+        steak knife
+        steamer
+        stockpot
+        stove
+        strainer
+        T
+        tablespoon
+        tart pan
+        tea infuser
+        teakettle
+        teaspoon
+        thermometer
+        toaster
+        toaster oven
+        tongs
+        trivet
+        U
+        utensils
+        V
+        vegetable bin
+        vegetable peeler
+        W
+        waffle iron
+        water filter
+        whisk
+        wok
+        Y
+        yogurt maker
+        Z
+        zester
+
+        """
+
+        cooking_words_cleaned = re.sub('\n', '', cooking_tools_text)
+        cooking_words = set(cooking_words_cleaned.split(' '))
+        cooking_words = [cw for cw in cooking_words if len(cw) > 1]
+
+        vehicle_words_text = """
+        aerial tramway
+        aircraft
+        aircraft carrier
+        airplane
+        ambulance
+        amphibious vehicle
+        armored car
+        auto
+        automobile
+        B
+        baby carriage
+        balloon
+        barge
+        barrow
+        bathyscaphe
+        battleship
+        bicycle
+        bike
+        biplane
+        blimp
+        boat
+        bobsled
+        bomber
+        boxcar
+        broomstick
+        buggy
+        bulldozer
+        bullet train
+        bus
+        C
+        cab
+        cabin cruiser
+        cable car
+        caboose
+        camper
+        canoe
+        car
+        caravan
+        caravel
+        cargo ship
+        carriage
+        carrier
+        cart
+        catamaran
+        chairlift
+        chariot
+        chopper
+        clipper ship
+        clunker
+        coach
+        combine
+        compact car
+        Conestoga wagon
+        container ship
+        convertible
+        conveyance
+        conveyor belt
+        convoy
+        coupe
+        covered wagon
+        crane
+        crop duster
+        cruise ship
+        cruiser
+        cutter
+        cycle
+        D
+        delivery truck
+        delivery van
+        destroyer
+        diesel truck
+        dinghy
+        dirigible
+        dirt bike
+        diving bell
+        dog cart
+        dogsled
+        donkey cart
+        dray
+        driver
+        dugout canoe
+        dump truck
+        E
+        earth mover
+        eighteen-wheeler
+        electric car
+        elevated railroad
+        elevator
+        engine
+        escalator
+        express train
+        F
+        ferry
+        fire engine
+        fireboat
+        fishing boat
+        flatbed truck
+        forklift
+        four-by-four
+        four-door
+        four-wheel drive
+        freight train
+        freighter
+        frigate
+        funicular railway
+        G
+        galleon
+        garbage truck
+        glider
+        go-cart
+        golf cart
+        gondola
+        gondola lift
+        gridlock
+        H
+        handcar
+        hang glider
+        hansom cab
+        hardtop
+        harvester
+        hatchback
+        haul
+        hay wagon
+        hearse
+        helicopter
+        hook and ladder truck
+        hot rod
+        hot-air balloon
+        houseboat
+        hovercraft
+        hull
+        Humvee
+        hybrid
+        hydrofoil
+        hydroplane
+        I
+        ice boat
+        ice breaker
+        J
+        jalopy
+        jeep
+        jet
+        jet boat
+        jet pack
+        jet ski
+        jetliner
+        journey
+        jumbo jet
+        junk
+        K
+        kayak
+        ketch
+        L
+        landing craft
+        life raft
+        lifeboat
+        light rail
+        limo
+        limousine
+        litter
+        locomotive
+        lorry
+        low-rider
+        M
+        magic carpet
+        maglev
+        mast
+        minesweeper
+        minibus
+        minivan
+        model T
+        monorail
+        moped
+        motor
+        motor home
+        motorboat
+        motorcar
+        motorcycle
+        mountain bike
+        N
+        narrowboat
+        O
+        oar
+        ocean liner
+        off-road vehicle
+        oil tanker
+        outboard motor
+        outrigger canoe
+        oxcart
+        P
+        paddle
+        paddlewheeler
+        parachute
+        passenger
+        patrol car
+        pedal boat
+        pickup truck
+        pilot
+        plane
+        police car
+        power boat
+        prairie schooner
+        propeller
+        PT boat
+        pumper truck
+        punt
+        push cart
+        R
+        racecar
+        racing car
+        raft
+        ragtop
+        railroad
+        railway
+        rapid transit
+        recreational vehicle
+        rickshaw
+        ride
+        riverboat
+        roadster
+        rocket
+        rover
+        rowboat
+        rudder
+        runabout
+        RV
+        S
+        sail
+        sailboat
+        satellite
+        school bus
+        schooner
+        scooter
+        scull
+        seaplane
+        sedan
+        sedan chair
+        Segway
+        semi
+        ship
+        shuttle
+        side wheeler
+        ski lift
+        ski tow
+        skiff
+        sled
+        sledge
+        sleigh
+        snow cat
+        snowmobile
+        snowplow
+        space shuttle
+        spaceship
+        speedboat
+        sport-utility vehicle/SUV
+        sports car
+        squad car
+        SST
+        stagecoach
+        station wagon
+        steamboat
+        steamship
+        stock car
+        stretch limo
+        stroller
+        subcompact
+        submarine
+        submersible
+        subway
+        surrey
+        SUV
+        T
+        T-bar lift
+        tank
+        tanker
+        taxi
+        taxicab
+        thresher
+        tire
+        toboggan
+        tow truck
+        town car
+        tracks
+        tractor
+        tractor-trailer
+        trail bike
+        trailer
+        train
+        tram
+        tramway
+        transit
+        trawler
+        tricycle
+        trolley
+        truck
+        tugboat
+        two-door
+        U
+        U-boat
+        ultralight craft
+        umiak
+        unicycle
+        V
+        van
+        vehicle
+        vespa
+        vessel
+        W
+        wagon
+        warship
+        wheel
+        wheelbarrow
+        wheelchair
+        windjammer
+        windshield
+        wreck
+        Y
+        yacht
+        yawl
+        Z
+        Zamboni
+        zeppelin        
+        """
+
+        vehicle_words_cleaned = re.sub('\n', '', vehicle_words_text)
+        vehicle_words = set(vehicle_words_cleaned.split(' '))
+        vehicle_words = [vw for vw in vehicle_words if len(vw) > 1]
+
+        weather_words_text = """
+        accumulation
+        advisory
+        air
+        air mass
+        air pollution
+        air pressure
+        almanac
+        altocumulus
+        altostratus
+        anemometer
+        atmosphere
+        atmospheric pressure
+        aurora
+        autumn
+        avalanche
+        B
+        balmy
+        barometer
+        barometric pressure
+        Beaufort wind scale
+        biosphere
+        black ice
+        blizzard
+        blustery
+        breeze
+        C
+        calm
+        cell
+        chinook wind
+        cirriform
+        cirrus
+        climate
+        climatology
+        cloud
+        cloud bank
+        cloudburst
+        cloudy
+        cold
+        cold front
+        cold snap
+        cold wave
+        compass
+        condensation
+        contrail
+        convergence
+        cumuliform
+        cumulonimbus
+        cumulus
+        current
+        cyclone
+        cyclonic flow
+        D
+        degree
+        depression
+        dew
+        dew point
+        disturbance
+        doldrums
+        downburst
+        downdraft
+        downpour
+        downwind
+        drift
+        drifting snow
+        drizzle
+        drought
+        dry
+        dust devil
+        dust storm
+        E
+        earthlight
+        easterlies
+        eddy
+        EF-scale
+        El Niño
+        emergency radio
+        evaporation
+        eye
+        eye wall
+        F
+        fair
+        fall
+        feeder bands
+        fire whirl
+        flash flood
+        flood
+        flood stage
+        flurry
+        fog
+        fog bank
+        forecast
+        freeze
+        freezing rain
+        front
+        frost
+        Fujita scale
+        funnel cloud
+        G
+        gale
+        global warming
+        graupel
+        greenhouse effect
+        ground fog
+        gully washer
+        gust
+        gustnado
+        H
+        haboob
+        hail
+        halo
+        haze
+        heat
+        heat index
+        heat wave
+        high
+        humid
+        humidity
+        hurricane
+        hurricane season
+        hydrologic cycle
+        hydrology
+        hydrometer
+        hydrosphere
+        hygrometer
+        I
+        ice
+        ice age
+        ice crystals
+        ice pellets
+        ice storm
+        icicle
+        inversion
+        isobar
+        isotherm
+        J
+        jet stream
+        K
+        Kelvin
+        knot
+        L
+        lake effect
+        land breeze
+        landfall
+        landspout
+        leeward
+        lightning
+        low
+        low clouds
+        low pressure system
+        M
+        macroburst
+        mammatus cloud
+        meteorologist
+        meteorology
+        microburst
+        mist
+        mistral wind
+        moisture
+        monsoon
+        muggy
+        N
+        National Hurricane Center (NHC)
+        National Weather Service (NWC)
+        NEXRAD
+        nimbostratus
+        nimbus
+        nor'easter
+        normal
+        nowcast
+        O
+        orographic cloud
+        outflow
+        outlook
+        overcast
+        ozone
+        P
+        parhelion
+        partly cloudy
+        permafrost
+        pileus cloud
+        polar
+        polar front
+        pollutant
+        precipitation
+        pressure
+        prevailing wind
+        R
+        radar
+        radiation
+        rain
+        rain gauge
+        rain shadow
+        rainbands
+        rainbow
+        relative humidity
+        ridge
+        rope tornado
+        S
+        sandstorm
+        Santa Ana wind
+        scattered
+        sea breeze
+        shower
+        sky
+        sleet
+        slush
+        smog
+        smoke
+        snow
+        snow flurry
+        snow level
+        snow line
+        snow shower
+        snowfall
+        snowflake
+        snowsquall
+        snowstorm
+        spring
+        squall
+        squall line
+        St. Elmo's fire
+        stationary front
+        steam
+        storm
+        storm surge
+        storm tracks
+        stratocumulus
+        stratosphere
+        stratus
+        subtropical
+        summer
+        sun dog
+        sun pillar
+        sunrise
+        sunset
+        supercell
+        surge
+        swell
+        T
+        temperate
+        temperature
+        thaw
+        thermal
+        thermometer
+        thunder
+        thunderstorm
+        tornado
+        tornado alley
+        trace
+        triple point
+        Tropic of Cancer
+        Tropic of Capricorn
+        tropical
+        tropical depression
+        tropical disturbance
+        tropical storm
+        tropical wave
+        troposphere
+        trough
+        turbulence
+        twilight
+        twister
+        typhoon
+        U
+        unstable
+        updraft
+        upwelling
+        upwind
+        V
+        vapor
+        vapor trail
+        visibility
+        vortex
+        W
+        wall cloud
+        warm
+        warning
+        watch
+        water
+        water cycle
+        waterspout
+        wave
+        weather
+        weather balloon
+        weather map
+        weather satellite
+        weathering
+        weathervane
+        wedge
+        westerlies
+        whirlwind
+        whiteout
+        wind
+        wind chill
+        wind chill factor
+        wind shear
+        wind vane
+        windsock
+        winter
+        Z
+        zone
+        """
+
+        weather_words_cleaned = re.sub('\n', '', weather_words_text)
+        weather_words = set(weather_words_cleaned.split(' '))
+        weather_words = [ww for ww in weather_words if len(ww) > 1]
+
+        # TODO separate these into separate decks
+        en_cards = {}
+        es_cards = {}
+        for pw in positive_traits_words:
+            en_word = pw
+            es_word = translate_en_word_to_es_word(en_word)
+
+            en_cards[en_word] = {"back": es_word, "tags": ["langid:en", "posid:ADJ", "notconfirmed"]}
+            es_cards[es_word] = {"back": en_word, "tags": ["langid:es", "posid:ADJ", "notconfirmed"]}
+
+        for nw in neutral_traits_words:
+            en_word = nw
+            es_word = translate_en_word_to_es_word(en_word)
+
+            en_cards[en_word] = {"back": es_word, "tags": ["langid:en", "posid:ADJ", "notconfirmed"]}
+            es_cards[es_word] = {"back": en_word, "tags": ["langid:es", "posid:ADJ", "notconfirmed"]}
+
+        for nw in negative_traits_words:
+            en_word = nw
+            es_word = translate_en_word_to_es_word(en_word)
+
+            en_cards[en_word] = {"back": es_word, "tags": ["langid:en", "posid:ADJ", "notconfirmed"]}
+            es_cards[es_word] = {"back": en_word, "tags": ["langid:es", "posid:ADJ", "notconfirmed"]}
+
+        for fw in feelings_words:
+            en_word = fw
+            es_word = translate_en_word_to_es_word(en_word)
+
+            en_cards[en_word] = {"back": es_word, "tags": ["langid:en", "posid:ADJ", "notconfirmed"]}
+            es_cards[es_word] = {"back": en_word, "tags": ["langid:es", "posid:ADJ", "notconfirmed"]}
+
+        for bsw in body_sensations_words:
+            en_word = bsw
+            es_word = translate_en_word_to_es_word(en_word)
+
+            en_cards[en_word] = {"back": es_word, "tags": ["langid:en", "posid:ADJ", "notconfirmed"]}
+            es_cards[es_word] = {"back": en_word, "tags": ["langid:es", "posid:ADJ", "notconfirmed"]}
+
+        for tw in tool_words:
+            en_word = tw
+            es_word = translate_en_word_to_es_word(en_word)
+
+            en_cards[en_word] = {"back": es_word, "tags": ["langid:en", "posid:NOUN", "notconfirmed"]}
+            es_cards[es_word] = {"back": en_word, "tags": ["langid:es", "posid:NOUN", "notconfirmed"]}
+
+        for cw in cooking_words:
+            en_word = cw
+            es_word = translate_en_word_to_es_word(en_word)
+
+            en_cards[en_word] = {"back": es_word, "tags": ["langid:en", "posid:NOUN", "notconfirmed"]}
+            es_cards[es_word] = {"back": en_word, "tags": ["langid:es", "posid:NOUN", "notconfirmed"]}
+
+        for cw in clothes_words:
+            en_word = cw
+            es_word = translate_en_word_to_es_word(en_word)
+
+            en_cards[en_word] = {"back": es_word, "tags": ["langid:en", "posid:NOUN", "notconfirmed"]}
+            es_cards[es_word] = {"back": en_word, "tags": ["langid:es", "posid:NOUN", "notconfirmed"]}
+
+        for vw in vehicle_words:
+            en_word = vw
+            es_word = translate_en_word_to_es_word(en_word)
+
+            en_cards[en_word] = {"back": es_word, "tags": ["langid:en", "posid:NOUN", "notconfirmed"]}
+            es_cards[es_word] = {"back": en_word, "tags": ["langid:es", "posid:NOUN", "notconfirmed"]}
+
+        for ww in weather_words:
+            en_word = ww
+            es_word = translate_en_word_to_es_word(en_word)
+
+            en_cards[en_word] = {"back": es_word, "tags": ["langid:en", "posid:NOUN", "notconfirmed"]}
+            es_cards[es_word] = {"back": en_word, "tags": ["langid:es", "posid:NOUN", "notconfirmed"]}
+
+
+        # build_anki_deck(deck_name, deck_dict)
+        deck_list = []
+        counter = 0
+        for k, v in deck_name_to_card_dict.items():
+            # print(k)
+            # print(counter)
+            counter += len(v)
+            deck_list.append(build_anki_deck(k,v))
+
+        print('Num Cards Created: '+str(counter))
+
+        ### So, generate an .apkg that is a collect of a few cards for many different decks
+        # build_anki_deck(deck_name, deck_dict)
+
+        pkg = genanki.Package(deck_list)
+        if DRY_RUN:
+            pkg.write_to_file('test_deck.apkg')
+            print('Wrote test_deck.apkg')
+        else:
+            pkg.write_to_file('IRL_deck.apkg')
+            print('Wrote IRL_deck.apkg')
+
+        # def build_anki_deck(deck_name, deck_dict)
 
     print('Done.')
